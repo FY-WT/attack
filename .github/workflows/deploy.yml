@@ -1,0 +1,19 @@
+name: deploy
+
+on:
+  push:
+    branches:
+      - corgi
+
+jobs:
+  aws:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Get AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::009661764077:role/cicd-role
+          aws-region: us-east-1
