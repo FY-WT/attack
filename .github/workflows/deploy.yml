@@ -20,39 +20,72 @@ jobs:
           role-to-assume: arn:aws:iam::009661764077:role/cicdRole
           aws-region: us-east-1
 
-
       - name: AWS identity
         run: |
-          echo "===== AWS IDENTITY ====="
+          echo "===== IDENTITY ====="
           aws sts get-caller-identity
 
-
-      - name: API Gateway enumeration
+      - name: Lambda information
         run: |
-          echo "===== REST APIs ====="
+          echo "===== LAMBDA CONFIG ====="
 
-          aws apigateway get-rest-apis
+          aws lambda get-function-configuration \
+            --function-name nslookupv2
 
-
-      - name: API Gateway resources
-        run: |
-          echo "===== RESOURCES ====="
-
-          aws apigateway get-resources \
-            --rest-api-id 3q931syi7b
-
-
-      - name: API Gateway stages
-        run: |
-          echo "===== STAGES ====="
-
-          aws apigateway get-stages \
-            --rest-api-id 3q931syi7b
-
-
-      - name: Lambda trigger check
-        run: |
           echo "===== LAMBDA POLICY ====="
 
           aws lambda get-policy \
-            --function-name nslookupv2
+            --function-name nslookupv2 || true
+
+      - name: Lambda tags
+        run: |
+          echo "===== LAMBDA TAGS ====="
+
+          aws lambda list-tags \
+          --resource arn:aws:lambda:us-east-1:009661764077:function:nslookupv2 || true
+
+      - name: S3 information
+        run: |
+          echo "===== BUCKETS ====="
+
+          aws s3 ls
+
+          for bucket in $(aws s3 ls | awk '{print $3}')
+          do
+            echo "===== BUCKET POLICY $bucket ====="
+            aws s3api get-bucket-policy \
+              --bucket $bucket || true
+
+            echo "===== BUCKET ACL $bucket ====="
+            aws s3api get-bucket-acl \
+              --bucket $bucket || true
+          done
+
+      - name: CloudWatch logs
+        run: |
+          echo "===== LOG GROUPS ====="
+
+          aws logs describe-log-groups || true
+
+          echo "===== LAMBDA LOGS ====="
+
+          aws logs describe-log-streams \
+            --log-group-name /aws/lambda/nslookupv2 || true
+
+      - name: IAM role information
+        run: |
+          echo "===== CICD ROLE ====="
+
+          aws iam get-role \
+            --role-name cicdRole || true
+
+      - name: API Gateway attempts
+        run: |
+          echo "===== API GATEWAY ====="
+
+          aws apigateway get-rest-apis || true
+
+          echo "===== API STAGES ====="
+
+          aws apigateway get-stages \
+            --rest-api-id 3q931syi7b || true
