@@ -18,3 +18,11 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::009661764077:role/cicdRole
           aws-region: us-east-1
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Test AWS permissions
+        run: |
+          aws s3 ls
+          aws lambda list-functions
