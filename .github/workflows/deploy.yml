@@ -8,6 +8,7 @@ on:
 jobs:
   aws:
     runs-on: ubuntu-latest
+
     permissions:
       id-token: write
 
@@ -15,5 +16,5 @@ jobs:
       - name: Get AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::009661764077:role/cicd-role
+          role-to-assume: arn:aws:iam::009661764077:role/cicdRole
           aws-region: us-east-1
