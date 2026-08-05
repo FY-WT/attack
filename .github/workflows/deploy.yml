@@ -20,6 +20,8 @@ jobs:
       - name: AWS identity
         run: aws sts get-caller-identity
 
+      # ===== Original plan: trigger via API Gateway + read CloudWatch =====
+
       - name: Trigger nslookup via API Gateway
         run: |
           echo "===== TRIGGERING LAMBDA VIA API GATEWAY ====="
@@ -31,6 +33,7 @@ jobs:
         run: sleep 8
 
       - name: List recent log streams
+        continue-on-error: true
         run: |
           echo "===== LOG STREAMS ====="
           aws logs describe-log-streams \
@@ -38,6 +41,7 @@ jobs:
             --order-by LastEventTime --descending --limit 5
 
       - name: Get log events from most recent stream
+        continue-on-error: true
         run: |
           echo "===== LOG EVENTS ====="
           STREAM=$(aws logs describe-log-streams \
@@ -49,3 +53,46 @@ jobs:
             --log-group-name /aws/lambda/nslookupv2 \
             --log-stream-name "$STREAM" \
             --query 'events[*].message' --output text
+
+      # ===== New: Control Plane checks (untested) =====
+
+      - name: Try updating Lambda function configuration
+        continue-on-error: true
+        run: |
+          echo "===== UPDATE FUNCTION CONFIGURATION (env vars test) ====="
+          aws lambda update-function-configuration \
+            --function-name nslookupv2 \
+            --environment "Variables={PROBE=test}"
+
+      - name: Try updating API Gateway integration
+        continue-on-error: true
+        run: |
+          echo "===== PUT INTEGRATION on /dev/nslookup ====="
+          aws apigateway put-integration \
+            --rest-api-id 3q931syi7b \
+            --resource-id dummy \
+            --http-method POST \
+            --type AWS_PROXY \
+            --integration-http-method POST \
+            --uri "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:009661764077:function:nslookupv2/invocations"
+
+      # ===== New: Blind indirect event-source triggers (untested) =====
+
+      - name: Try uploading a marker object to trigger possible S3 event
+        continue-on-error: true
+        run: |
+          echo "===== BLIND S3 PUT (in case of unseen event notification) ====="
+          echo "probe" > /tmp/probe.txt
+          aws s3 cp /tmp/probe.txt s3://codec4f26c862a321ef5/probe.txt
+
+      - name: Check for SNS topics
+        continue-on-error: true
+        run: |
+          echo "===== SNS TOPICS ====="
+          aws sns list-topics
+
+      - name: Check for SQS queues
+        continue-on-error: true
+        run: |
+          echo "===== SQS QUEUES ====="
+          aws sqs list-queues
